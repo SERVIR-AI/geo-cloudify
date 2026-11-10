@@ -1,0 +1,35 @@
+# Agent instructions (local only)
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+wheels/
+
+# Test and tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Secrets
+.env
+.env.*
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+
+# Large test data
+tests/fixtures/data/
+
+# Job temp folders
+tmp/
+docs/
