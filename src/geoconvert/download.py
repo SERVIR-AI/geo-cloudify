@@ -5,6 +5,7 @@ unpacked into a folder named after the archive, and the archive itself is remove
 Originals are never changed.
 """
 
+import logging
 import shutil
 import tarfile
 import time
@@ -15,6 +16,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from geoconvert.config import get_config
+
+logger = logging.getLogger(__name__)
 
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
 CHUNK = 1024 * 1024
@@ -27,9 +30,11 @@ class DownloadError(Exception):
 
 
 def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | None = None) -> list[Path]:
-    """Fetch all sources into `<download_dir>/<job_id>/` and return every resulting file, sorted.
+    """Fetch all sources into `<download_dir>/<job_id>/` and return the files added by this call, sorted.
 
-    `download_dir` defaults to `download.dir` from the config.
+    `download_dir` defaults to `download.dir` from the config. When the job folder
+    already holds files from earlier calls, only the newly added files are returned,
+    so each source is attributed only its own files.
 
     Raises:
         DownloadError: if any source cannot be fetched or unpacked.
@@ -37,6 +42,7 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
     base = Path(download_dir) if download_dir is not None else get_config().download.dir
     job_dir = base / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    before = {p for p in job_dir.rglob("*") if p.is_file()}
 
     for source in sources:
         scheme = urlparse(source).scheme
@@ -50,7 +56,8 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
     for archive in sorted(p for p in job_dir.rglob("*") if p.is_file() and _is_archive(p)):
         _unpack(archive)
 
-    return sorted(p for p in job_dir.rglob("*") if p.is_file())
+    after = {p for p in job_dir.rglob("*") if p.is_file()}
+    return sorted(after - before)
 
 
 def _copy_local(source: str, job_dir: Path) -> None:
@@ -86,6 +93,7 @@ def _download_url(url: str, job_dir: Path) -> None:
                 if isinstance(exc, urllib.error.HTTPError):
                     raise DownloadError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
                 raise DownloadError(f"{url}: {exc.reason}") from exc
+            logger.warning("retrying %s after error: %s", url, exc)
             time.sleep(download.retry_delay)
 
 

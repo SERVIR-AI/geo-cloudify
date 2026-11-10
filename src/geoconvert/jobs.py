@@ -4,12 +4,15 @@
 and records nothing itself; `run_job()` takes the result and updates the status.
 """
 
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
 from geoconvert import download
+
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
@@ -84,9 +87,11 @@ def run_job(job: Job) -> None:
         try:
             paths = download.fetch_sources([source], job.id)
         except download.DownloadError as exc:
+            logger.warning("source %s failed: %s", source, exc)
             job.results.append(SourceOutcome(source=source, status=SourceStatus.FAILED, error=str(exc)))
             continue
         except Exception as exc:  # unexpected error: stop the job, keep the reason
+            logger.exception("job %s failed on source %s", job.id, source)
             job.status = JobStatus.FAILED
             job.results.append(SourceOutcome(source=source, status=SourceStatus.FAILED, error=f"unexpected error: {exc}"))
             return

@@ -47,6 +47,15 @@ def test_several_sources_in_one_call(tmp_path):
     assert [p.name for p in out] == ["a.tif", "b.nc"]
 
 
+def test_second_call_returns_only_new_files(tmp_path):
+    a = _write(tmp_path / "in" / "a.tif")
+    b = _write(tmp_path / "in" / "b.nc")
+    first = fetch_sources([str(a)], "job", tmp_path)
+    second = fetch_sources([str(b)], "job", tmp_path)
+    assert first == [tmp_path / "job" / "a.tif"]
+    assert second == [tmp_path / "job" / "b.nc"]
+
+
 def test_real_fixture_is_copied_byte_for_byte(tmp_path):
     src = FIXTURES / "tiled_geotiff_not_cog" / "GMW_N10E106_2020_v3.tif"
     if not src.exists():

@@ -42,6 +42,16 @@ def test_get_job_returns_status_and_downloaded_files(tmp_path, monkeypatch):
     assert Path(result["files"][0]).name == "a.tif"
 
 
+def test_each_source_lists_only_its_own_files(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    a = _write(tmp_path / "in" / "a.tif")
+    b = _write(tmp_path / "in" / "b.nc")
+    job_id = client.post("/jobs", json={"sources": [str(a), str(b)]}).json()["job_id"]
+    results = client.get(f"/jobs/{job_id}").json()["results"]
+    assert [Path(r["files"][0]).name for r in results] == ["a.tif", "b.nc"]
+    assert [len(r["files"]) for r in results] == [1, 1]
+
+
 def test_bad_source_is_reported_and_job_continues(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     good = _write(tmp_path / "in" / "a.tif")
