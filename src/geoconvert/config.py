@@ -19,12 +19,22 @@ class DownloadConfig(BaseModel):
     retry_attempts: int = 3    # total attempts, including the first
 
 
+class CogConfig(BaseModel):
+    """Tunable defaults for COG conversion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    compress: str = "DEFLATE"
+    blocksize: int = 512
+
+
 class Config(BaseModel):
     """All tunable parameters, grouped by module."""
 
     model_config = ConfigDict(extra="forbid")
 
     download: DownloadConfig = DownloadConfig()
+    cog: CogConfig = CogConfig()
 
 
 def load_config(path: str | Path) -> Config:

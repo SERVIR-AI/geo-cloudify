@@ -62,3 +62,19 @@ def test_download_retry_override(tmp_path):
     config = load_config(path)
     assert config.download.retry_delay == 1.5
     assert config.download.retry_attempts == 5
+
+
+def test_cog_defaults(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("")
+    config = load_config(path)
+    assert config.cog.compress == "DEFLATE"
+    assert config.cog.blocksize == 512
+
+
+def test_cog_override(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("cog:\n  compress: LZW\n  blocksize: 256\n")
+    config = load_config(path)
+    assert config.cog.compress == "LZW"
+    assert config.cog.blocksize == 256

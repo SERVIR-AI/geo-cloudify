@@ -6,3 +6,7 @@ download:
   dir: tmp/downloads          # each job gets its own folder inside this one
   retry_delay: 10.0           # seconds to wait between download attempts
   retry_attempts: 3           # total attempts, including the first
+
+cog:
+  compress: DEFLATE           # default COG compression
+  blocksize: 512              # default COG tile size
