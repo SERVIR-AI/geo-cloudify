@@ -1,3 +1,5 @@
+"""Integration test for the health route."""
+
 from fastapi.testclient import TestClient
 
 from geoconvert.api import app

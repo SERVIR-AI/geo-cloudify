@@ -1,10 +1,22 @@
-"""FastAPI app, routes, request/response models."""
+"""FastAPI app entrypoint: build the app and mount the routers."""
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-app = FastAPI(title="geoconvert")
+from geoconvert.config import get_config
+from geoconvert.routes import health, jobs
+from geoconvert.settings import get_settings
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load settings and config once at startup, so a bad file stops the app early."""
+    get_settings()
+    get_config()
+    yield
+
+
+app = FastAPI(title="geoconvert", lifespan=lifespan)
+app.include_router(health.router)
+app.include_router(jobs.router)
