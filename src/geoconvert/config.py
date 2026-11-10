@@ -28,7 +28,13 @@ class Config(BaseModel):
 
 
 def load_config(path: str | Path) -> Config:
-    """Read and validate the YAML config. Relative paths in it are resolved from the file's folder."""
+    """Read and validate the YAML config. Relative paths in it are resolved from the file's folder.
+
+    Raises:
+        FileNotFoundError: if the file does not exist.
+        pydantic.ValidationError: if it contains unknown keys or invalid values.
+        yaml.YAMLError: if the file is not valid YAML.
+    """
     path = Path(path).resolve()
     data = yaml.safe_load(path.read_text()) or {}
     config = Config.model_validate(data)
@@ -39,5 +45,8 @@ def load_config(path: str | Path) -> Config:
 
 @lru_cache
 def get_config() -> Config:
-    """Return the cached config, loaded once from the file named in settings."""
+    """Return the cached config, loaded once from the file named in settings.
+
+    Raises the same as `load_config`.
+    """
     return load_config(get_settings().config_path)

@@ -11,7 +11,12 @@ from geoconvert.settings import get_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load settings and config once at startup, so a bad file stops the app early."""
+    """Load settings and config once at startup, so a bad file stops the app early.
+
+    Raises:
+        FileNotFoundError: if the config file is missing.
+        pydantic.ValidationError: if the config has unknown keys.
+    """
     get_settings()
     get_config()
     yield

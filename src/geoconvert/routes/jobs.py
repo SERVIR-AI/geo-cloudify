@@ -18,7 +18,10 @@ class CreateJobRequest(BaseModel):
 
 @router.post("/jobs")
 def create_job(request: CreateJobRequest, background_tasks: BackgroundTasks) -> dict[str, str]:
-    """Create a job and run it in the background; return its ID straight away."""
+    """Create a job and run it in the background; return its ID straight away.
+
+    Extra keys in the request body are rejected (HTTP 422).
+    """
     job = store.create(request.sources)
     background_tasks.add_task(run_job, job)
     return {"job_id": job.id}
@@ -26,7 +29,11 @@ def create_job(request: CreateJobRequest, background_tasks: BackgroundTasks) -> 
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
-    """Return the job status and per-source results."""
+    """Return the job status and per-source results.
+
+    Raises:
+        HTTPException: 404 if the job does not exist.
+    """
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")

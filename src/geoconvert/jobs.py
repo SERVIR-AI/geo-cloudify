@@ -74,7 +74,11 @@ store = JobStore()
 
 
 def run_job(job: Job) -> None:
-    """Run the steps for one job, in order. Only this function writes job status."""
+    """Run the steps for one job, in order. Only this function writes job status.
+
+    Does not raise. Each source that fails to download is recorded as a failed
+    result and the job continues; an unexpected error marks the whole job failed.
+    """
     job.status = JobStatus.DOWNLOADING
     for source in job.sources:
         try:

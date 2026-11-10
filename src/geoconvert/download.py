@@ -30,6 +30,9 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
     """Fetch all sources into `<download_dir>/<job_id>/` and return every resulting file, sorted.
 
     `download_dir` defaults to `download.dir` from the config.
+
+    Raises:
+        DownloadError: if any source cannot be fetched or unpacked.
     """
     base = Path(download_dir) if download_dir is not None else get_config().download.dir
     job_dir = base / job_id
@@ -51,11 +54,15 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
 
 
 def _copy_local(source: str, job_dir: Path) -> None:
-    """Copy a local file or folder into the job folder. Originals are never changed."""
+    """Copy a local file or folder into the job folder. Originals are never changed.
+
+    Raises:
+        DownloadError: if the source does not exist or its name is already taken.
+    """
     src = Path(unquote(urlparse(source).path) if source.startswith("file:") else source).expanduser()
     if not src.exists():
         raise DownloadError(f"{source}: not found")
-    target = _free_target(job_dir / src.name)
+    target = _available_target(job_dir / src.name)
     if src.is_dir():
         shutil.copytree(src, target)
     else:
@@ -63,13 +70,18 @@ def _copy_local(source: str, job_dir: Path) -> None:
 
 
 def _download_url(url: str, job_dir: Path) -> None:
-    """Download a URL into the job folder, retrying transient failures."""
+    """Download a URL into the job folder, retrying transient failures.
+
+    Raises:
+        DownloadError: if the download still fails after retries, or is not retryable.
+    """
     download = get_config().download
     for attempt in range(1, download.retry_attempts + 1):
         try:
             _download_once(url, job_dir)
             return
         except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            # Give up on permanent errors, or when this was the last attempt.
             if not _is_transient(exc) or attempt == download.retry_attempts:
                 if isinstance(exc, urllib.error.HTTPError):
                     raise DownloadError(f"{url}: HTTP {exc.code} {exc.reason}") from exc
@@ -78,10 +90,14 @@ def _download_url(url: str, job_dir: Path) -> None:
 
 
 def _download_once(url: str, job_dir: Path) -> None:
-    """Download a URL in one attempt, streaming to a `.part` file then renaming."""
+    """Download a URL in one attempt, streaming to a `.part` file then renaming.
+
+    Raises:
+        DownloadError: if the target name is already taken in the job folder.
+    """
     with urllib.request.urlopen(url, timeout=STALL_TIMEOUT_SECONDS) as response:
         name = response.headers.get_filename() or Path(unquote(urlparse(response.url).path)).name
-        target = _free_target(job_dir / (Path(name).name or "download"))
+        target = _available_target(job_dir / (Path(name).name or "download"))
         partial = target.with_name(target.name + ".part")
         try:
             with partial.open("wb") as out:
@@ -100,13 +116,18 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 def _unpack(archive: Path) -> None:
-    """Unpack an archive into a folder named after it, then remove the archive."""
-    out = _free_target(archive.parent / _archive_stem(archive))
+    """Unpack an archive into a folder named after it, then remove the archive.
+
+    Raises:
+        DownloadError: if an entry would escape the folder or the archive is unreadable.
+    """
+    out = _available_target(archive.parent / _archive_stem(archive))
     out.mkdir()
     try:
         if archive.suffix.lower() == ".zip":
             with zipfile.ZipFile(archive) as zf:
                 for member in zf.namelist():
+                    # Reject entries that would land outside the unpack folder.
                     if not (out / member).resolve().is_relative_to(out.resolve()):
                         raise DownloadError(f"{archive.name}: '{member}' would unpack outside the folder")
                 zf.extractall(out)
@@ -135,8 +156,12 @@ def _archive_stem(path: Path) -> str:
     return path.stem
 
 
-def _free_target(target: Path) -> Path:
-    """Return the target path if it is free, else raise."""
+def _available_target(target: Path) -> Path:
+    """Return the path if nothing exists there yet, else raise.
+
+    Raises:
+        DownloadError: if a file or folder already exists at that path.
+    """
     if target.exists():
         raise DownloadError(f"{target.name} already exists in the job folder (two sources with the same name)")
     return target
