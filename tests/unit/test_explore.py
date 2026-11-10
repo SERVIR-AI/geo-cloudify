@@ -229,7 +229,7 @@ def test_unexpected_error_propagates(tmp_path, monkeypatch):
     monkeypatch.setattr(geoconvert_explore.cog_explore, "explore", boom)
 
     with pytest.raises(ValueError, match="NOPE"):
-        build_plan({"src": [main]}, {"NOPE": 1})
+        build_plan({"src": [main]}, {"src": {"NOPE": 1}})
 
 
 def test_skips_are_summarised_in_one_info_line_per_source(tmp_path, caplog):
@@ -277,7 +277,7 @@ def test_netcdf_2d_converts():
 def test_cog_kwargs_reach_every_item(tmp_path):
     main = _write_tif(tmp_path / "a.tif")
 
-    plan = build_plan({"src": [main]}, {"nodata": -9999})
+    plan = build_plan({"src": [main]}, {"src": {"nodata": -9999}})
 
     assert plan.items[0].settings["NODATA"] == -9999
 

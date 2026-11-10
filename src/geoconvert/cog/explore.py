@@ -87,7 +87,7 @@ def resolve_settings(fingerprint: RasterFingerprint, cog_kwargs: dict | None) ->
     """
     # Key is capitalized to handle the case where it is all lowercase/first letter capitalized
     kwargs = {str(key).upper(): value for key, value in (cog_kwargs or {}).items()}
-    _reject_unknown_options(kwargs)
+    validate_cog_kwargs(kwargs)
     nodata = kwargs.pop("NODATA", None)
     if nodata is None:
         nodata = fingerprint.nodata
@@ -226,9 +226,13 @@ def _color_table(ds) -> list[list[int]] | None:
     return rows
 
 
-def _reject_unknown_options(cog_kwargs: dict) -> None:
-    """Raise ValueError for any cog_kwargs key the COG driver does not know."""
-    unknown = set(cog_kwargs) - ALLOWED_KWARGS
+def validate_cog_kwargs(cog_kwargs: dict) -> None:
+    """Check that every cog_kwargs key is a known option (case-insensitive). Returns None.
+
+    Raises:
+        ValueError: if a key is not an option the COG driver knows.
+    """
+    unknown = {str(key).upper() for key in cog_kwargs} - ALLOWED_KWARGS
     if unknown:
         raise ValueError(f"unknown cog_kwargs option(s): {', '.join(sorted(unknown))}")
 

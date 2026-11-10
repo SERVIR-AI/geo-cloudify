@@ -9,8 +9,11 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any
 
-from geoconvert import download
+from geoconvert import download, explore
+from geoconvert.plan import JobPlan
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +46,18 @@ class SourceOutcome:
 
 @dataclass
 class Job:
-    """A conversion job: its sources, its status, and per-source results."""
+    """A conversion job: its sources, options, status, per-source results and plan.
+
+    `error` holds the reason when the whole job fails.
+    """
 
     id: str
     status: JobStatus = JobStatus.PENDING
     sources: list[str] = field(default_factory=list)
     results: list[SourceOutcome] = field(default_factory=list)
+    cog_kwargs_by_source: dict[str, dict[str, Any] | None] = field(default_factory=dict)
+    plan: JobPlan | None = None
+    error: str | None = None
 
 
 class JobStore:
@@ -59,9 +68,9 @@ class JobStore:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def create(self, sources: list[str]) -> Job:
-        """Register a new job for the given sources and return it."""
-        job = Job(id=uuid.uuid4().hex, sources=sources)
+    def create(self, sources: list[str], cog_kwargs_by_source: dict[str, dict[str, Any] | None] | None = None) -> Job:
+        """Register a new job for the given sources and per-source COG options and return it."""
+        job = Job(id=uuid.uuid4().hex, sources=sources, cog_kwargs_by_source=cog_kwargs_by_source or {})
         with self._lock:
             self._jobs[job.id] = job
         return job
@@ -80,7 +89,9 @@ def run_job(job: Job) -> None:
     """Run the steps for one job, in order. Only this function writes job status.
 
     Does not raise. Each source that fails to download is recorded as a failed
-    result and the job continues; an unexpected error marks the whole job failed.
+    result and the job continues. After downloads, the plan is built from the
+    sources that downloaded. An unexpected error marks the whole job failed and
+    is kept in `job.error`.
     """
     job.status = JobStatus.DOWNLOADING
     for source in job.sources:
@@ -93,7 +104,19 @@ def run_job(job: Job) -> None:
         except Exception as exc:  # unexpected error: stop the job, keep the reason
             logger.exception("job %s failed on source %s", job.id, source)
             job.status = JobStatus.FAILED
-            job.results.append(SourceOutcome(source=source, status=SourceStatus.FAILED, error=f"unexpected error: {exc}"))
+            job.error = f"unexpected error: {exc}"
+            job.results.append(SourceOutcome(source=source, status=SourceStatus.FAILED, error=job.error))
             return
         job.results.append(SourceOutcome(source=source, status=SourceStatus.OK, files=[str(p) for p in paths]))
+
+    files_by_source = {
+        result.source: [Path(f) for f in result.files] for result in job.results if result.status is SourceStatus.OK
+    }
+    try:
+        job.plan = explore.build_plan(files_by_source, job.cog_kwargs_by_source)
+    except Exception as exc:  # unexpected error: stop the job, keep the reason
+        logger.exception("job %s failed during exploration", job.id)
+        job.status = JobStatus.FAILED
+        job.error = f"unexpected error: {exc}"
+        return
     job.status = JobStatus.DONE

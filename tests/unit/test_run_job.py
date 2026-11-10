@@ -19,3 +19,19 @@ def test_failed_source_is_recorded_and_logged(tmp_path, monkeypatch, caplog):
     assert job.results[0].status is SourceStatus.FAILED
     assert "not found" in job.results[0].error
     assert any("missing.tif" in record.getMessage() for record in caplog.records)
+
+
+def test_exploration_error_fails_job_and_keeps_error(tmp_path, monkeypatch):
+    config = Config(download=DownloadConfig(dir=tmp_path / "downloads"))
+    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+
+    def boom(files_by_source, cog_kwargs_by_source):
+        raise RuntimeError("explore broke")
+
+    monkeypatch.setattr("geoconvert.explore.build_plan", boom)
+    job = Job(id="j2", sources=[])
+    run_job(job)
+
+    assert job.status is JobStatus.FAILED
+    assert job.error == "unexpected error: explore broke"
+    assert job.plan is None

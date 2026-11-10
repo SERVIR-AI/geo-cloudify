@@ -47,7 +47,9 @@ except ImportError:  # pragma: no cover - depends on the rasterio version
     FILE_ERRORS = (rasterio.errors.RasterioError,)
 
 
-def build_plan(files_by_source: dict[str, list[Path]], cog_kwargs: dict | None) -> JobPlan:
+def build_plan(
+    files_by_source: dict[str, list[Path]], cog_kwargs_by_source: dict[str, dict | None] | None
+) -> JobPlan:
     """Group files per source and return the job plan: what to convert, keep or skip.
 
     Files are handled per source, so an item never mixes two sources and a
@@ -58,20 +60,22 @@ def build_plan(files_by_source: dict[str, list[Path]], cog_kwargs: dict | None) 
     Args:
         files_by_source: files that downloaded fine, keyed by the source string
             from the request.
-        cog_kwargs: COG options from the request, or None. Passed unchanged to the
-            COG explorer, which validates the option names.
+        cog_kwargs_by_source: COG options per source string, or None. A source
+            that is missing or maps to None uses no options. Each source's options
+            are passed unchanged to the COG explorer, which validates the names.
 
     Returns:
         The plan for the whole job.
 
     Raises:
-        ValueError: if a file needs COG settings and cog_kwargs has an unknown
+        ValueError: if a file needs COG settings and its source's options have an unknown
             option name.
         Exception: any error that is not a rasterio read error propagates, so a
             fault in the code fails the job instead of being reported as a skip.
     """
     items: list[PlanItem] = []
     for source in sorted(files_by_source):
+        cog_kwargs = (cog_kwargs_by_source or {}).get(source)
         items.extend(_plan_source(source, files_by_source[source], cog_kwargs))
     items.sort(key=lambda item: (item.source, item.files[0]))
     return JobPlan(items=items)

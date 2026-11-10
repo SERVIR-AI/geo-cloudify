@@ -35,13 +35,24 @@ Companion files travel with their raster: the files GDAL reports it opened (for 
 
 ## `cog_kwargs`
 
-- Any GDAL COG driver creation option, plus `NODATA`. Names are case-insensitive. Unknown names are rejected.
+Set per source in the `POST /jobs` body. A source is either a plain path or URL (no options) or an object with `source` and `cog_kwargs`:
+
+```json
+{"sources": [
+  {"source": "https://example.com/tmin.tif", "cog_kwargs": {"COMPRESS": "ZSTD", "nodata": -9999}},
+  "/data/thetao.nc"
+]}
+```
+
+- A source's `cog_kwargs` applies only to the files that source produced (every file from a zip or folder shares it). Other sources keep their own settings, including their declared nodata.
+
+- Any GDAL COG driver creation option, plus `NODATA`. Names are case-insensitive. An unknown name is rejected with HTTP 422 and no job is created.
 - Values in `cog_kwargs` override the defaults and the values derived from the data.
 - These settings mark a conversion as lossy (reported as "lossy by request", not checked pixel by pixel):
   - `COMPRESS=JPEG` or `COMPRESS=WEBP`
   - `COMPRESS=LERC`, `LERC_DEFLATE` or `LERC_ZSTD` with `MAX_Z_ERROR` above 0
   - `TILING_SCHEME` (reprojects the raster)
 
-## Status
+## Job status
 
-The rules above are implemented in `src/geoconvert/cog/explore.py`. Exploration is not yet run by `POST /jobs`.
+`GET /jobs/{id}` returns `status`, `error` (the reason when the whole job fails), per-source `results`, and `plan` (one item per file: convert, pass through or skip, with the resolved settings). NaN and infinity appear as the strings `"NaN"` and `"Infinity"`.
