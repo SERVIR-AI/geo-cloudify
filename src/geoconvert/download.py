@@ -53,7 +53,10 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
         else:
             raise DownloadError(f"{source}: scheme '{scheme}' is not supported")
 
-    for archive in sorted(p for p in job_dir.rglob("*") if p.is_file() and _is_archive(p)):
+    # Only unpack archives added by this call, so a leftover archive from an
+    # earlier failed call cannot break this source.
+    new_archives = sorted(p for p in job_dir.rglob("*") if p.is_file() and p not in before and _is_archive(p))
+    for archive in new_archives:
         _unpack(archive)
 
     after = {p for p in job_dir.rglob("*") if p.is_file()}
@@ -126,6 +129,9 @@ def _is_transient(exc: BaseException) -> bool:
 def _unpack(archive: Path) -> None:
     """Unpack an archive into a folder named after it, then remove the archive.
 
+    Returns nothing. On failure removes the half-made folder and raises; the
+    archive itself is kept for debugging.
+
     Raises:
         DownloadError: if an entry would escape the folder or the archive is unreadable.
     """
@@ -146,7 +152,11 @@ def _unpack(archive: Path) -> None:
                 except tarfile.FilterError as e:
                     raise DownloadError(f"{archive.name}: '{e.tarinfo.name}' would unpack outside the folder") from e
     except (zipfile.BadZipFile, tarfile.ReadError) as e:
+        shutil.rmtree(out, ignore_errors=True)
         raise DownloadError(f"{archive.name}: not a readable archive ({e})") from e
+    except Exception:
+        shutil.rmtree(out, ignore_errors=True)
+        raise
     archive.unlink()
 
 

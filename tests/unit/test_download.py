@@ -148,6 +148,19 @@ def test_tar_with_path_outside_folder_is_rejected(tmp_path):
         fetch_sources([str(tpath)], "job", tmp_path)
 
 
+def test_bad_archive_does_not_break_a_later_call(tmp_path):
+    bad = tmp_path / "in" / "bad.zip"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_bytes(b"not a zip")
+    with pytest.raises(DownloadError, match="not a readable archive"):
+        fetch_sources([str(bad)], "job", tmp_path)
+    # The half-made unpack folder is removed; the next source is unaffected.
+    assert not (tmp_path / "job" / "bad").exists()
+
+    good = _write(tmp_path / "in" / "good.tif")
+    assert fetch_sources([str(good)], "job", tmp_path) == [tmp_path / "job" / "good.tif"]
+
+
 # --- URLs (served by a local test server, no internet) -----------------------
 
 @pytest.fixture

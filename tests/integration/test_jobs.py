@@ -64,6 +64,18 @@ def test_bad_source_is_reported_and_job_continues(tmp_path, monkeypatch):
     assert body["results"][0]["files"]
 
 
+def test_bad_archive_source_does_not_break_later_source(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    bad = tmp_path / "in" / "bad.zip"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_bytes(b"not a zip")
+    good = _write(tmp_path / "in" / "good.tif")
+    job_id = client.post("/jobs", json={"sources": [str(bad), str(good)]}).json()["job_id"]
+    results = client.get(f"/jobs/{job_id}").json()["results"]
+    assert [r["status"] for r in results] == ["failed", "ok"]
+    assert "not a readable archive" in results[0]["error"]
+
+
 def test_unknown_job_is_404(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     response = client.get("/jobs/does-not-exist")
