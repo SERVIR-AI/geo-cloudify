@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -26,6 +27,7 @@ class CogConfig(BaseModel):
 
     compress: str = "DEFLATE"
     blocksize: int = 512
+    num_threads: int | Literal["ALL_CPUS"] = "ALL_CPUS"
 
 
 class Config(BaseModel):

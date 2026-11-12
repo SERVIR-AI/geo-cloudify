@@ -18,15 +18,23 @@ logger = logging.getLogger(__name__)
 
 EPSG_4326_WKT = CRS.from_epsg(4326).to_wkt()
 
-# GDAL COG driver creation options, plus NODATA (handled separately, not a driver option).
+# GDAL COG driver creation options a caller may set, plus NODATA (handled separately,
+# not a driver option). NUM_THREADS is not one: it comes from config.
 COG_DRIVER_OPTIONS = frozenset({
-    "BLOCKSIZE", "COMPRESS", "LEVEL", "NUM_THREADS", "PREDICTOR",
+    "BLOCKSIZE", "COMPRESS", "LEVEL", "PREDICTOR",
     "RESAMPLING", "OVERVIEWS", "OVERVIEW_COUNT", "OVERVIEW_RESAMPLING",
     "BIGTIFF", "QUALITY", "MAX_Z_ERROR", "IN_MEMORY", "SPARSE_OK",
     "ADD_ALPHA", "ALIGNED_LEVELS", "TILING_SCHEME", "WARP_RESAMPLING",
     "WARP_MEMORY_LIMIT",
 })
 ALLOWED_KWARGS = COG_DRIVER_OPTIONS | {"NODATA"}
+
+# COMPRESS values listed in the GDAL COG driver documentation.
+COG_COMPRESS = frozenset(
+    {"NONE", "LZW", "JPEG", "DEFLATE", "ZSTD", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", "LZMA"}
+)
+# LEVEL range per codec; any codec not listed uses the widest range.
+LEVEL_RANGES = {"DEFLATE": (1, 12), "LERC_DEFLATE": (1, 12), "ZSTD": (1, 22), "LERC_ZSTD": (1, 22), "LZMA": (0, 9)}
 
 CUBE_DRIVERS = frozenset({"netcdf", "hdf5", "hdf5image", "hdf4"})
 DEFAULT_TRANSFORM = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
@@ -99,6 +107,7 @@ def resolve_settings(fingerprint: RasterFingerprint, cog_kwargs: dict | None) ->
         # Drop any overviews the source already has and rebuild them in COG
         # order, because existing ones are often in the wrong order.
         "OVERVIEWS": "IGNORE_EXISTING",
+        "NUM_THREADS": get_config().cog.num_threads,  # set by the service, not the caller
     }
     # How the zoomed-out overview levels are built: nearest keeps class values
     # intact (colour table), average suits continuous data.
@@ -227,14 +236,80 @@ def _color_table(ds) -> list[list[int]] | None:
 
 
 def validate_cog_kwargs(cog_kwargs: dict) -> None:
-    """Check that every cog_kwargs key is a known option (case-insensitive). Returns None.
+    """Check cog_kwargs names (case-insensitive) and values. Returns None.
 
     Raises:
-        ValueError: if a key is not an option the COG driver knows.
+        ValueError: if a key is not an option the COG driver knows, or a value
+            fails `check_cog_values`.
     """
     unknown = {str(key).upper() for key in cog_kwargs} - ALLOWED_KWARGS
     if unknown:
         raise ValueError(f"unknown cog_kwargs option(s): {', '.join(sorted(unknown))}")
+    check_cog_values({str(key).upper(): value for key, value in cog_kwargs.items()})
+
+
+def check_cog_values(settings: dict) -> None:
+    """Check COG option values before GDAL sees them. Keys must be uppercase. Returns None.
+
+    GDAL does not reject every bad value: it reads a BLOCKSIZE of "big" as 0 and
+    can then try to allocate huge buffers, and it silently replaces an unknown
+    COMPRESS. Used on arrival (`validate_cog_kwargs`) and by `cog.convert.to_cog`.
+
+    Raises:
+        ValueError: if a value is out of range or not a number where one is needed.
+    """
+    if "BLOCKSIZE" in settings:
+        size = _as_int(settings["BLOCKSIZE"])
+        if size is None or not (16 <= size <= 4096 and size & (size - 1) == 0):
+            raise ValueError(f"BLOCKSIZE must be a power of two from 16 to 4096, got {settings['BLOCKSIZE']!r}")
+    if "NODATA" in settings and _as_float(settings["NODATA"]) is None:
+        raise ValueError(f"NODATA must be a number, got {settings['NODATA']!r}")
+    # Without COMPRESS, conversion uses the configured codec, so LEVEL is checked against it.
+    compress = str(settings.get("COMPRESS", get_config().cog.compress)).upper()
+    if "COMPRESS" in settings and compress not in COG_COMPRESS:
+        raise ValueError(f"COMPRESS must be one of {', '.join(sorted(COG_COMPRESS))}, got {settings['COMPRESS']!r}")
+    if "OVERVIEW_COUNT" in settings:
+        count = _as_int(settings["OVERVIEW_COUNT"])
+        if count is None or not 0 <= count <= 16:
+            raise ValueError(f"OVERVIEW_COUNT must be a whole number from 0 to 16, got {settings['OVERVIEW_COUNT']!r}")
+    if "NUM_THREADS" in settings and str(settings["NUM_THREADS"]).upper() != "ALL_CPUS":
+        threads = _as_int(settings["NUM_THREADS"])
+        if threads is None or threads < 1:
+            raise ValueError(f"NUM_THREADS must be ALL_CPUS or a whole number of 1 or more, got {settings['NUM_THREADS']!r}")
+    if "LEVEL" in settings:
+        low, high = LEVEL_RANGES.get(compress, (0, 22))
+        level = _as_int(settings["LEVEL"])
+        if level is None or not low <= level <= high:
+            raise ValueError(f"LEVEL must be from {low} to {high} for {compress}, got {settings['LEVEL']!r}")
+    if "QUALITY" in settings:
+        quality = _as_int(settings["QUALITY"])
+        if quality is None or not 1 <= quality <= 100:
+            raise ValueError(f"QUALITY must be from 1 to 100, got {settings['QUALITY']!r}")
+    if "MAX_Z_ERROR" in settings:
+        error = _as_float(settings["MAX_Z_ERROR"])
+        if error is None or error < 0:
+            raise ValueError(f"MAX_Z_ERROR must be a number of 0 or more, got {settings['MAX_Z_ERROR']!r}")
+
+
+def _as_int(value) -> int | None:
+    """Return value as a whole number, or None if it is not one."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(str(value))
+    except ValueError:
+        return None
+    return int(number) if number.is_integer() else None
+
+
+def _as_float(value) -> float | None:
+    """Return value as a number, or None if it is not one."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(str(value))
+    except ValueError:
+        return None
 
 
 def _is_lossy(settings: dict) -> bool:

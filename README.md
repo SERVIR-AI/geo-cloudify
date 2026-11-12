@@ -46,7 +46,20 @@ Set per source in the `POST /jobs` body. A source is either a plain path or URL 
 
 - A source's `cog_kwargs` applies only to the files that source produced (every file from a zip or folder shares it). Other sources keep their own settings, including their declared nodata.
 
-- Any GDAL COG driver creation option, plus `NODATA`. Names are case-insensitive. An unknown name is rejected with HTTP 422 and no job is created.
+- Any GDAL COG driver creation option except `NUM_THREADS`, plus `NODATA`. Names are case-insensitive. An unknown name is rejected with HTTP 422 and no job is created.
+- `NUM_THREADS` is set by the service (`cog.num_threads` in `config.yaml`, default `ALL_CPUS`) and is not accepted in requests.
+- Values are checked on arrival too. A bad value is rejected with HTTP 422:
+
+  | Option | Allowed values |
+  |---|---|
+  | `COMPRESS` | `NONE`, `LZW`, `JPEG`, `DEFLATE`, `ZSTD`, `WEBP`, `LERC`, `LERC_DEFLATE`, `LERC_ZSTD`, `LZMA` |
+  | `BLOCKSIZE` | a power of two from 16 to 4096 |
+  | `NODATA` | a number |
+  | `OVERVIEW_COUNT` | a whole number from 0 to 16 |
+  | `LEVEL` | DEFLATE and LERC_DEFLATE 1-12, ZSTD and LERC_ZSTD 1-22, LZMA 0-9, others 0-22. Without `COMPRESS`, checked against the default codec |
+  | `QUALITY` | 1 to 100 |
+  | `MAX_Z_ERROR` | a number of 0 or more |
+
 - Values in `cog_kwargs` override the defaults and the values derived from the data.
 - These settings mark a conversion as lossy (reported as "lossy by request", not checked pixel by pixel):
   - `COMPRESS=JPEG` or `COMPRESS=WEBP`

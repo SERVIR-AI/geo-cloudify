@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 from rasterio.transform import from_origin
 
@@ -164,6 +165,23 @@ def test_source_without_options_keeps_declared_nodata(tmp_path, monkeypatch):
     assert nodata == {"a.tif": -9999, "b.tif": -32768}
 
 
+def test_bad_cog_value_is_422_and_creates_no_job(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr("geoconvert.jobs.store._jobs", {})
+    body = {"sources": [{"source": "a.tif", "cog_kwargs": {"BLOCKSIZE": "big"}}]}
+    response = client.post("/jobs", json=body)
+    assert response.status_code == 422
+    assert "BLOCKSIZE" in response.text
+    assert store._jobs == {}
+
+
+@pytest.mark.parametrize("cog_kwargs", [{"LEVEL": 20}, {"NUM_THREADS": 4}, {"OVERVIEW_COUNT": 17}])
+def test_rejected_cog_values_are_422(tmp_path, monkeypatch, cog_kwargs):
+    client = _client(tmp_path, monkeypatch)
+    response = client.post("/jobs", json={"sources": [{"source": "a.tif", "cog_kwargs": cog_kwargs}]})
+    assert response.status_code == 422
+
+
 def test_job_wide_cog_kwargs_is_rejected(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     response = client.post("/jobs", json={"sources": [], "cog_kwargs": {"nodata": -9999}})
@@ -191,3 +209,70 @@ def test_text_file_named_tif_is_a_skip_item(tmp_path, monkeypatch):
     src = _write(tmp_path / "in" / "a.tif")
     items = _plan_items(client, {"sources": [str(src)]})
     assert [i["action"] for i in items] == ["skip"]
+
+
+def _job(client, body: dict) -> dict:
+    job_id = client.post("/jobs", json=body).json()["job_id"]
+    return client.get(f"/jobs/{job_id}").json()
+
+
+def test_geotiff_is_converted(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    src = _geotiff(tmp_path / "in" / "r.tif")
+    body = _job(client, {"sources": [str(src)]})
+    assert body["status"] == "done"
+    assert len(body["conversions"]) == 1
+    conversion = body["conversions"][0]
+    assert conversion["status"] == "ok"
+    assert conversion["error"] is None
+    assert Path(conversion["file"]).name == "r.tif"
+    output = Path(conversion["output"])
+    assert output.exists()
+    assert output.parent.name == "output"
+
+
+def test_failed_item_does_not_stop_other_items(tmp_path, monkeypatch):
+    from rasterio.errors import RasterioError
+
+    from geoconvert.cog import convert
+
+    real_to_cog = convert.to_cog
+
+    def flaky(item, job_dir, out_dir):
+        if Path(item.files[0]).name == "bad.tif":
+            raise RasterioError("write failed")
+        return real_to_cog(item, job_dir, out_dir)
+
+    monkeypatch.setattr("geoconvert.cog.convert.to_cog", flaky)
+    client = _client(tmp_path, monkeypatch)
+    bad = _geotiff(tmp_path / "in" / "bad.tif")
+    good = _geotiff(tmp_path / "in" / "good.tif")
+    body = _job(client, {"sources": [str(bad), str(good)]})
+    assert body["status"] == "done"
+    outcomes = {Path(c["file"]).name: c for c in body["conversions"]}
+    assert outcomes["bad.tif"]["status"] == "failed"
+    assert outcomes["bad.tif"]["error"] == "write failed"
+    assert outcomes["bad.tif"]["output"] is None
+    assert outcomes["good.tif"]["status"] == "ok"
+
+
+def test_unexpected_conversion_error_fails_job(tmp_path, monkeypatch):
+    def boom(item, job_dir, out_dir):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr("geoconvert.cog.convert.to_cog", boom)
+    client = _client(tmp_path, monkeypatch)
+    src = _geotiff(tmp_path / "in" / "r.tif")
+    body = _job(client, {"sources": [str(src)]})
+    assert body["status"] == "failed"
+    assert body["error"] == "unexpected error: bug"
+
+
+def test_pass_through_and_skip_items_are_not_converted(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    small = _geotiff(tmp_path / "in" / "small.tif", size=100)  # one block: already a COG
+    text = _write(tmp_path / "in" / "notes.txt")
+    body = _job(client, {"sources": [str(small), str(text)]})
+    assert body["status"] == "done"
+    assert sorted(i["action"] for i in body["plan"]["items"]) == ["pass_through", "skip"]
+    assert body["conversions"] == []

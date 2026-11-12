@@ -115,6 +115,7 @@ def test_resolve_settings_defaults():
     assert settings["OVERVIEWS"] == "IGNORE_EXISTING"
     assert settings["RESAMPLING"] == "AVERAGE"
     assert settings["PREDICTOR"] == "YES"
+    assert settings["NUM_THREADS"] == "ALL_CPUS"
 
 
 def test_resolve_settings_color_table_uses_nearest():

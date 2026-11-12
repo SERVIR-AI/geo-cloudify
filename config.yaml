@@ -10,3 +10,4 @@ download:
 cog:
   compress: DEFLATE           # default COG compression
   blocksize: 512              # default COG tile size
+  num_threads: ALL_CPUS       # threads GDAL uses to write a COG (a number or ALL_CPUS); not settable per request

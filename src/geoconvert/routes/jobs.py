@@ -55,7 +55,7 @@ def create_job(request: CreateJobRequest, background_tasks: BackgroundTasks) -> 
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
-    """Return the job status, error, per-source results and plan.
+    """Return the job status, error, per-source results, plan and conversions.
 
     Raises:
         HTTPException: 404 if the job does not exist.
@@ -77,4 +77,8 @@ def get_job(job_id: str) -> dict:
             for result in job.results
         ],
         "plan": to_json_safe_dict(job.plan) if job.plan else None,
+        "conversions": [
+            {"file": c.file, "status": c.status.value, "output": c.output, "error": c.error}
+            for c in job.conversions
+        ],
     }

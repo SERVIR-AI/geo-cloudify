@@ -70,11 +70,13 @@ def test_cog_defaults(tmp_path):
     config = load_config(path)
     assert config.cog.compress == "DEFLATE"
     assert config.cog.blocksize == 512
+    assert config.cog.num_threads == "ALL_CPUS"
 
 
 def test_cog_override(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("cog:\n  compress: LZW\n  blocksize: 256\n")
+    path.write_text("cog:\n  compress: LZW\n  blocksize: 256\n  num_threads: 2\n")
     config = load_config(path)
     assert config.cog.compress == "LZW"
     assert config.cog.blocksize == 256
+    assert config.cog.num_threads == 2
