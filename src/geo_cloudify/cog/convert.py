@@ -14,8 +14,8 @@ import rasterio
 import rasterio.shutil
 from rasterio.crs import CRS
 
-from geoconvert.cog.explore import check_cog_values
-from geoconvert.plan import Action, PlanItem
+from geo_cloudify.cog.explore import check_cog_values
+from geo_cloudify.plan import Action, PlanItem
 
 # Values in item.settings that are instructions for this step, not GDAL options.
 _INSTRUCTIONS = ("NODATA", "CRS")

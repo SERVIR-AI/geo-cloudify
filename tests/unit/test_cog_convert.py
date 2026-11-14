@@ -9,9 +9,9 @@ import rasterio
 from rasterio.transform import from_origin
 from rio_cogeo.cogeo import cog_validate
 
-from geoconvert.cog.convert import to_cog
-from geoconvert.cog.explore import explore, validate_cog_kwargs
-from geoconvert.plan import Action, PlanItem
+from geo_cloudify.cog.convert import to_cog
+from geo_cloudify.cog.explore import explore, validate_cog_kwargs
+from geo_cloudify.plan import Action, PlanItem
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "data"
 

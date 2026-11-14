@@ -2,13 +2,13 @@
 
 import logging
 
-from geoconvert.config import Config, DownloadConfig
-from geoconvert.jobs import Job, JobStatus, SourceStatus, run_job
+from geo_cloudify.config import Config, DownloadConfig
+from geo_cloudify.jobs import Job, JobStatus, SourceStatus, run_job
 
 
 def test_failed_source_is_recorded_and_logged(tmp_path, monkeypatch, caplog):
     config = Config(download=DownloadConfig(dir=tmp_path / "downloads"))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
     caplog.set_level(logging.WARNING)
 
     job = Job(id="j1", sources=[str(tmp_path / "missing.tif")])
@@ -23,12 +23,12 @@ def test_failed_source_is_recorded_and_logged(tmp_path, monkeypatch, caplog):
 
 def test_exploration_error_fails_job_and_keeps_error(tmp_path, monkeypatch):
     config = Config(download=DownloadConfig(dir=tmp_path / "downloads"))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
 
     def boom(files_by_source, cog_kwargs_by_source):
         raise RuntimeError("explore broke")
 
-    monkeypatch.setattr("geoconvert.explore.build_plan", boom)
+    monkeypatch.setattr("geo_cloudify.explore.build_plan", boom)
     job = Job(id="j2", sources=[])
     run_job(job)
 

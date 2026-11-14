@@ -7,7 +7,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict
 
-from geoconvert.settings import get_settings
+from geo_cloudify.settings import get_settings
 
 
 class DownloadConfig(BaseModel):

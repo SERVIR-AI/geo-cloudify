@@ -12,9 +12,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from geoconvert import download, explore
-from geoconvert.cog import convert
-from geoconvert.plan import Action, JobPlan
+from geo_cloudify import download, explore
+from geo_cloudify.cog import convert
+from geo_cloudify.plan import Action, JobPlan
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Path to the YAML file with tunable parameters (see config.py)
-    config_path: Path = Field(default=Path("config.yaml"), validation_alias="GEOCONVERT_CONFIG")
+    config_path: Path = Field(default=Path("config.yaml"), validation_alias="GEO_CLOUDIFY_CONFIG")
 
 
 @lru_cache

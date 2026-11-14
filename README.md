@@ -1,6 +1,12 @@
-# geoconvert
+# geo-cloudify
 
-A FastAPI service that converts geospatial files to cloud-optimized formats. Rasters become Cloud Optimized GeoTIFFs (COGs).
+Converts geospatial files to cloud-optimized formats. Rasters become Cloud Optimized GeoTIFFs (COGs). The import name is `geo_cloudify`.
+
+## Install
+
+- Library only (COG conversion, no web server): `uv sync --extra cog`, or `pip install "geo-cloudify[cog] @ git+https://github.com/SERVIR-AI/geo-cloudify.git"`.
+- With the FastAPI service: `uv sync --extra cog --extra api`. Everything: `uv sync --all-extras`.
+- Start the service: `uv run uvicorn geo_cloudify.api:app`.
 
 ## Which rasters are converted, passed through or skipped
 

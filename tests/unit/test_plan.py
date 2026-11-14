@@ -2,7 +2,7 @@
 
 import json
 
-from geoconvert.plan import Action, JobPlan, Kind, PlanItem, RasterFingerprint, to_json_safe_dict
+from geo_cloudify.plan import Action, JobPlan, Kind, PlanItem, RasterFingerprint, to_json_safe_dict
 
 
 def test_plan_round_trips_through_json():

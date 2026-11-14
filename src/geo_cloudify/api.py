@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from geoconvert.config import get_config
-from geoconvert.routes import health, jobs
-from geoconvert.settings import get_settings
+from geo_cloudify.config import get_config
+from geo_cloudify.routes import health, jobs
+from geo_cloudify.settings import get_settings
 
 
 @asynccontextmanager
@@ -22,6 +22,6 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="geoconvert", lifespan=lifespan)
+app = FastAPI(title="geo-cloudify", lifespan=lifespan)
 app.include_router(health.router)
 app.include_router(jobs.router)

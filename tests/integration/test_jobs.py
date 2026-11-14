@@ -9,14 +9,14 @@ from rasterio.transform import from_origin
 
 from fastapi.testclient import TestClient
 
-from geoconvert.api import app
-from geoconvert.config import Config, DownloadConfig
-from geoconvert.jobs import store
+from geo_cloudify.api import app
+from geo_cloudify.config import Config, DownloadConfig
+from geo_cloudify.jobs import store
 
 
 def _client(tmp_path, monkeypatch):
     config = Config(download=DownloadConfig(dir=tmp_path / "downloads"))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
     return TestClient(app)
 
 
@@ -167,7 +167,7 @@ def test_source_without_options_keeps_declared_nodata(tmp_path, monkeypatch):
 
 def test_bad_cog_value_is_422_and_creates_no_job(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr("geoconvert.jobs.store._jobs", {})
+    monkeypatch.setattr("geo_cloudify.jobs.store._jobs", {})
     body = {"sources": [{"source": "a.tif", "cog_kwargs": {"BLOCKSIZE": "big"}}]}
     response = client.post("/jobs", json=body)
     assert response.status_code == 422
@@ -196,7 +196,7 @@ def test_extra_key_in_source_item_is_rejected(tmp_path, monkeypatch):
 
 def test_unknown_cog_option_is_422_and_creates_no_job(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr("geoconvert.jobs.store._jobs", {})
+    monkeypatch.setattr("geo_cloudify.jobs.store._jobs", {})
     body = {"sources": [{"source": "a.tif", "cog_kwargs": {"COMPRES": "LZW"}}]}
     response = client.post("/jobs", json=body)
     assert response.status_code == 422
@@ -234,7 +234,7 @@ def test_geotiff_is_converted(tmp_path, monkeypatch):
 def test_failed_item_does_not_stop_other_items(tmp_path, monkeypatch):
     from rasterio.errors import RasterioError
 
-    from geoconvert.cog import convert
+    from geo_cloudify.cog import convert
 
     real_to_cog = convert.to_cog
 
@@ -243,7 +243,7 @@ def test_failed_item_does_not_stop_other_items(tmp_path, monkeypatch):
             raise RasterioError("write failed")
         return real_to_cog(item, job_dir, out_dir)
 
-    monkeypatch.setattr("geoconvert.cog.convert.to_cog", flaky)
+    monkeypatch.setattr("geo_cloudify.cog.convert.to_cog", flaky)
     client = _client(tmp_path, monkeypatch)
     bad = _geotiff(tmp_path / "in" / "bad.tif")
     good = _geotiff(tmp_path / "in" / "good.tif")
@@ -260,7 +260,7 @@ def test_unexpected_conversion_error_fails_job(tmp_path, monkeypatch):
     def boom(item, job_dir, out_dir):
         raise RuntimeError("bug")
 
-    monkeypatch.setattr("geoconvert.cog.convert.to_cog", boom)
+    monkeypatch.setattr("geo_cloudify.cog.convert.to_cog", boom)
     client = _client(tmp_path, monkeypatch)
     src = _geotiff(tmp_path / "in" / "r.tif")
     body = _job(client, {"sources": [str(src)]})

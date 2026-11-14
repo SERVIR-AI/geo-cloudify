@@ -14,8 +14,8 @@ from pathlib import Path
 import rasterio
 from rasterio.io import DatasetReader
 
-from geoconvert.cog import explore as cog_explore
-from geoconvert.plan import Action, JobPlan, Kind, PlanItem
+from geo_cloudify.cog import explore as cog_explore
+from geo_cloudify.plan import Action, JobPlan, Kind, PlanItem
 
 logger = logging.getLogger(__name__)
 

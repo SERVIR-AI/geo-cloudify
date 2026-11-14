@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from geoconvert.api import app
+from geo_cloudify.api import app
 
 
 def test_health_returns_ok():

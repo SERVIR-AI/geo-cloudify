@@ -10,9 +10,9 @@ from rasterio.enums import Resampling
 from rasterio.errors import RasterioError, RasterioIOError
 from rasterio.transform import from_origin
 
-import geoconvert.explore as geoconvert_explore
-from geoconvert.explore import SKIP_REASON, UNSUPPORTED_REASON, build_plan
-from geoconvert.plan import Action, Kind
+import geo_cloudify.explore as geo_cloudify_explore
+from geo_cloudify.explore import SKIP_REASON, UNSUPPORTED_REASON, build_plan
+from geo_cloudify.plan import Action, Kind
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "data"
 
@@ -61,7 +61,7 @@ def test_detected_file_that_is_also_a_companion_is_not_a_main_file(tmp_path, mon
     # Stand in for a `.tif.ovr` that GDAL accepts as a raster: a detected file that
     # is listed as a companion of another main file belongs to that file.
     monkeypatch.setattr(
-        geoconvert_explore, "_companions", lambda dataset, path, by_resolved: [other] if path == main else []
+        geo_cloudify_explore, "_companions", lambda dataset, path, by_resolved: [other] if path == main else []
     )
 
     plan = build_plan({"src": [main, other]}, None)
@@ -187,7 +187,7 @@ def test_other_gdal_error_keeps_the_message_without_the_path(tmp_path, monkeypat
             raise RasterioIOError(f"'{path}' Permission denied")
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(geoconvert_explore.rasterio, "open", fake_open)
+    monkeypatch.setattr(geo_cloudify_explore.rasterio, "open", fake_open)
 
     plan = build_plan({"src": [unreadable]}, None)
 
@@ -198,7 +198,7 @@ def test_other_gdal_error_keeps_the_message_without_the_path(tmp_path, monkeypat
 def test_read_error_after_detection_becomes_a_skip_and_a_warning(tmp_path, monkeypatch, caplog):
     bad = _write_tif(tmp_path / "bad.tif")
     good = _write_tif(tmp_path / "good.tif")
-    real_explore = geoconvert_explore.cog_explore.explore
+    real_explore = geo_cloudify_explore.cog_explore.explore
 
     def fake_explore(main, companions, source, cog_kwargs):
         """Fail while exploring `bad.tif`, otherwise defer to the real exploration."""
@@ -206,7 +206,7 @@ def test_read_error_after_detection_becomes_a_skip_and_a_warning(tmp_path, monke
             raise RasterioIOError("simulated read failure")
         return real_explore(main, companions, source, cog_kwargs)
 
-    monkeypatch.setattr(geoconvert_explore.cog_explore, "explore", fake_explore)
+    monkeypatch.setattr(geo_cloudify_explore.cog_explore, "explore", fake_explore)
     caplog.set_level(logging.WARNING)
 
     plan = build_plan({"src": [bad, good]}, None)
@@ -226,7 +226,7 @@ def test_unexpected_error_propagates(tmp_path, monkeypatch):
         """Raise an error that is not a rasterio error."""
         raise ValueError("unknown cog_kwargs option(s): NOPE")
 
-    monkeypatch.setattr(geoconvert_explore.cog_explore, "explore", boom)
+    monkeypatch.setattr(geo_cloudify_explore.cog_explore, "explore", boom)
 
     with pytest.raises(ValueError, match="NOPE"):
         build_plan({"src": [main]}, {"src": {"NOPE": 1}})

@@ -8,7 +8,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from geoconvert.cog.explore import (
+from geo_cloudify.cog.explore import (
     _is_cube,
     _is_lossy,
     detect,
@@ -17,7 +17,7 @@ from geoconvert.cog.explore import (
     is_cog,
     resolve_settings,
 )
-from geoconvert.plan import Action, Kind, RasterFingerprint
+from geo_cloudify.plan import Action, Kind, RasterFingerprint
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "data"
 

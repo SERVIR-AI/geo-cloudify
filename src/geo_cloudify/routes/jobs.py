@@ -5,9 +5,9 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from geoconvert.cog.explore import validate_cog_kwargs
-from geoconvert.jobs import run_job, store
-from geoconvert.plan import to_json_safe_dict
+from geo_cloudify.cog.explore import validate_cog_kwargs
+from geo_cloudify.jobs import run_job, store
+from geo_cloudify.plan import to_json_safe_dict
 
 router = APIRouter()
 

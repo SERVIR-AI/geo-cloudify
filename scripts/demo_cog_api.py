@@ -2,12 +2,12 @@
 # requires-python = ">=3.12"
 # dependencies = ["rasterio>=1.4", "rio-cogeo>=7.0", "numpy>=2.0"]
 # ///
-"""Demo: send rasters to a running geoconvert API, then check every COG it wrote.
+"""Demo: send rasters to a running geo_cloudify API, then check every COG it wrote.
 
 Usage:
     uv run scripts/demo_cog_api.py [--api URL] [--sidecar-sample] [SOURCE ...] [--kwargs SOURCE JSON ...]
 
-Start the API first, in another terminal:  uv run uvicorn geoconvert.api:app
+Start the API first, in another terminal:  uv run uvicorn geo_cloudify.api:app
 
 With no SOURCE, a sample set from tests/fixtures/data is sent:
   - a striped CHIRTS GeoTIFF with {"nodata": -9999}
@@ -64,7 +64,7 @@ def call(method: str, url: str, body: dict | None = None) -> dict:
     except urllib.error.HTTPError as e:
         sys.exit(f"{method} {url} -> HTTP {e.code}: {e.read().decode()[:500]}")
     except urllib.error.URLError as e:
-        sys.exit(f"cannot reach the API at {url} ({e.reason}). Start it with: uv run uvicorn geoconvert.api:app")
+        sys.exit(f"cannot reach the API at {url} ({e.reason}). Start it with: uv run uvicorn geo_cloudify.api:app")
 
 
 def run_job(api: str, sources: list) -> dict:
@@ -281,7 +281,7 @@ def report(job: dict) -> bool:
         rows.append((name + (f" +{len(companions)}" if companions else ""), action, mb(source_bytes), mb(output.stat().st_size), verdict))
 
     print("\n" + "=" * 104)
-    print("REPORT: rasters -> COG (through the geoconvert API)")
+    print("REPORT: rasters -> COG (through the geo_cloudify API)")
     print("=" * 104)
     print(f"{'file (+companions)':<56}{'action':>13}{'source MB':>11}{'COG MB':>10}{'ratio':>7}{'lossless':>9}")
     print("-" * 104)

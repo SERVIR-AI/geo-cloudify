@@ -1,6 +1,6 @@
-# Tunable parameters for geoconvert.
+# Tunable parameters for geo_cloudify.
 # Relative paths are resolved from this file's folder.
-# Use another file by setting GEOCONVERT_CONFIG in .env.
+# Use another file by setting GEO_CLOUDIFY_CONFIG in .env.
 
 download:
   dir: tmp/downloads          # each job gets its own folder inside this one

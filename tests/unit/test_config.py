@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from geoconvert.config import load_config
-from geoconvert.settings import Settings
+from geo_cloudify.config import load_config
+from geo_cloudify.settings import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,7 +43,7 @@ def test_missing_config_file_raises(tmp_path):
 
 
 def test_config_path_read_from_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv("GEOCONVERT_CONFIG", str(tmp_path / "other.yaml"))
+    monkeypatch.setenv("GEO_CLOUDIFY_CONFIG", str(tmp_path / "other.yaml"))
     settings = Settings(_env_file=None)
     assert settings.config_path == tmp_path / "other.yaml"
 

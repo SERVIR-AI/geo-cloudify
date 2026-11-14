@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from geoconvert.config import get_config
+from geo_cloudify.config import get_config
 
 logger = logging.getLogger(__name__)
 

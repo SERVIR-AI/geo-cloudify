@@ -20,7 +20,7 @@ For each input (a .nc / .nc4 / .h5 file, local or an http(s) URL):
      per-variable attributes
 
 Prints one report line per input and exits non-zero if any input fails the check.
-Not production code: a blueprint for the geoconvert Zarr step.
+Not production code: a blueprint for the geo_cloudify Zarr step.
 """
 
 import argparse

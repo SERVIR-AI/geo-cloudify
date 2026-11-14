@@ -127,19 +127,21 @@ wheels = [
 ]
 
 [[package]]
-name = "geoconvert"
+name = "geo-cloudify"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
-    { name = "fastapi" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
+api = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 cog = [
     { name = "numpy" },
     { name = "rasterio" },
@@ -155,16 +157,16 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.127" },
-    { name = "fastapi", specifier = ">=0.162.2" },
+    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.162.2" },
     { name = "numpy", marker = "extra == 'cog'", specifier = ">=2.5.4" },
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "pydantic-settings", specifier = ">=2.16.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rasterio", marker = "extra == 'cog'", specifier = ">=1.5.2" },
     { name = "rio-cogeo", marker = "extra == 'cog'", specifier = ">=7.0.4" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
+    { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.54.0" },
 ]
-provides-extras = ["cog"]
+provides-extras = ["api", "cog"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -11,8 +11,8 @@ import rasterio
 from rasterio.crs import CRS
 from rio_cogeo.cogeo import cog_validate
 
-from geoconvert.config import get_config
-from geoconvert.plan import Action, Kind, PlanItem, RasterFingerprint
+from geo_cloudify.config import get_config
+from geo_cloudify.plan import Action, Kind, PlanItem, RasterFingerprint
 
 logger = logging.getLogger(__name__)
 

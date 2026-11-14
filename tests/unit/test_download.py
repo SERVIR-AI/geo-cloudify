@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from geoconvert.download import DownloadError, fetch_sources
+from geo_cloudify.download import DownloadError, fetch_sources
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "data"
 
@@ -77,10 +77,10 @@ def test_same_file_name_twice_raises(tmp_path):
 
 
 def test_default_download_dir_comes_from_config(tmp_path, monkeypatch):
-    from geoconvert.config import Config, DownloadConfig
+    from geo_cloudify.config import Config, DownloadConfig
 
     config = Config(download=DownloadConfig(dir=tmp_path / "from_config"))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
     src = _write(tmp_path / "in" / "a.tif")
     out = fetch_sources([str(src)], "job-1")
     assert out == [tmp_path / "from_config" / "job-1" / "a.tif"]
@@ -209,10 +209,10 @@ def _serve_with(root: Path, handler):
 
 
 def test_url_500_is_retried_until_success(tmp_path, monkeypatch):
-    from geoconvert.config import Config, DownloadConfig
+    from geo_cloudify.config import Config, DownloadConfig
 
     config = Config(download=DownloadConfig(dir=tmp_path, retry_delay=0.0, retry_attempts=3))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
 
     root = tmp_path / "served"
     root.mkdir()
@@ -241,10 +241,10 @@ def test_url_500_is_retried_until_success(tmp_path, monkeypatch):
 
 
 def test_url_500_exhausts_retries_then_raises(tmp_path, monkeypatch):
-    from geoconvert.config import Config, DownloadConfig
+    from geo_cloudify.config import Config, DownloadConfig
 
     config = Config(download=DownloadConfig(dir=tmp_path, retry_delay=0.0, retry_attempts=3))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
 
     root = tmp_path / "served"
     root.mkdir()
@@ -268,10 +268,10 @@ def test_url_500_exhausts_retries_then_raises(tmp_path, monkeypatch):
 
 
 def test_url_404_is_not_retried(tmp_path, monkeypatch):
-    from geoconvert.config import Config, DownloadConfig
+    from geo_cloudify.config import Config, DownloadConfig
 
     config = Config(download=DownloadConfig(dir=tmp_path, retry_delay=0.0, retry_attempts=3))
-    monkeypatch.setattr("geoconvert.download.get_config", lambda: config)
+    monkeypatch.setattr("geo_cloudify.download.get_config", lambda: config)
 
     root = tmp_path / "served"
     root.mkdir()
