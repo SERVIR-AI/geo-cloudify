@@ -31,9 +31,9 @@ from geo_cloudify.config import CogConfig, get_config
 from geo_cloudify.settings import get_settings
 
 # How far (in pixels) an origin offset may be from a whole number and still count as aligned.
-_ALIGN_TOLERANCE = 1e-6
+ALIGN_TOLERANCE = 1e-6
 # How far (relative) two pixel sizes may differ and still count as equal.
-_PIXEL_SIZE_TOLERANCE = 1e-9
+PIXEL_SIZE_TOLERANCE = 1e-9
 # URL schemes a tile may use, and the GDAL virtual file system prefix each one maps to.
 _VSI_PREFIXES = {
     "http": "/vsicurl/",
@@ -120,7 +120,7 @@ class _Header:
     nodatavals: tuple[float | None, ...]
 
 
-def _same_nodata(a: float | None, b: float | None) -> bool:
+def same_nodata(a: float | None, b: float | None) -> bool:
     """Return True when two nodata values are equal, treating NaN as equal to NaN.
 
     Args:
@@ -189,7 +189,7 @@ def _check_own_header(header: _Header) -> None:
         )
     if len(set(header.dtypes)) > 1:
         raise TileMismatchError(header.name, "data type", f"bands differ: {header.dtypes}")
-    if any(not _same_nodata(v, header.nodatavals[0]) for v in header.nodatavals):
+    if any(not same_nodata(v, header.nodatavals[0]) for v in header.nodatavals):
         raise TileMismatchError(header.name, "nodata", f"bands differ: {header.nodatavals}")
 
 
@@ -211,7 +211,7 @@ def _pixel_offset(header: _Header, ref: _Header) -> tuple[int, int]:
     col = (t.c - r.c) / r.a
     row = (t.f - r.f) / r.e  # r.e is negative, so a tile further north gets a negative row
     for axis, offset in (("x", col), ("y", row)):
-        if abs(offset - round(offset)) > _ALIGN_TOLERANCE:
+        if abs(offset - round(offset)) > ALIGN_TOLERANCE:
             raise TileMismatchError(
                 header.name, "grid alignment",
                 f"origin is {offset:.6f} pixels from {ref.name} along {axis}, not a whole number",
@@ -244,10 +244,10 @@ def check_tiles(tiles: Sequence[str | PathLike]) -> TileGrid:
             "data type" or "nodata").
         rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
     """
-    return _place_tiles(tiles)[0]
+    return place_tiles(tiles)[0]
 
 
-def _place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_Header, int, int]]]:
+def place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_Header, int, int]]]:
     """Run the `check_tiles` checks and also say where each tile sits on the union grid.
 
     Args:
@@ -274,8 +274,8 @@ def _place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[
         if header.crs != ref.crs:
             raise TileMismatchError(header.name, "crs", f"{header.crs} vs {ref.crs} in {ref.name}")
         t, r = header.transform, ref.transform
-        if not (math.isclose(t.a, r.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
-                and math.isclose(t.e, r.e, rel_tol=_PIXEL_SIZE_TOLERANCE)):
+        if not (math.isclose(t.a, r.a, rel_tol=PIXEL_SIZE_TOLERANCE)
+                and math.isclose(t.e, r.e, rel_tol=PIXEL_SIZE_TOLERANCE)):
             raise TileMismatchError(
                 header.name, "pixel size", f"({t.a}, {-t.e}) vs ({r.a}, {-r.e}) in {ref.name}"
             )
@@ -287,7 +287,7 @@ def _place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[
             raise TileMismatchError(
                 header.name, "data type", f"{header.dtypes[0]} vs {ref.dtypes[0]} in {ref.name}"
             )
-        if not _same_nodata(header.nodatavals[0], ref.nodatavals[0]):
+        if not same_nodata(header.nodatavals[0], ref.nodatavals[0]):
             raise TileMismatchError(
                 header.name, "nodata", f"{header.nodatavals[0]} vs {ref.nodatavals[0]} in {ref.name}"
             )
@@ -313,12 +313,12 @@ def _place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[
     return grid, [(h, col - left, row - top) for (col, row), h in zip(offsets, headers)]
 
 
-def _check_no_overlap(placed: Sequence[tuple[_Header, int, int]]) -> None:
+def check_no_overlap(placed: Sequence[tuple[_Header, int, int]]) -> None:
     """Refuse tiles whose pixels would land on the same place in the union grid.
 
     Args:
         placed: each tile's header with its column and row on the union grid,
-            as returned by `_place_tiles`.
+            as returned by `place_tiles`.
 
     Returns:
         None.
@@ -453,7 +453,7 @@ def _write_vrt(
     nodata value is written only when the tiles have one.
 
     Args:
-        grid: the union grid from `_place_tiles`.
+        grid: the union grid from `place_tiles`.
         placed: each tile's header with its column and row on the grid.
         path: where to write the VRT file.
         tags: dataset metadata (default domain) to put on the VRT.
@@ -566,8 +566,8 @@ def merge_to_cog(
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
-    grid, placed = _place_tiles(tiles)
-    _check_no_overlap(placed)
+    grid, placed = place_tiles(tiles)
+    check_no_overlap(placed)
     tags, looks = _read_look(tiles[0])
 
     config = _cog_config()
