@@ -6,12 +6,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+import rasterio.shutil
 from rasterio.enums import Resampling
 from rasterio.errors import RasterioError, RasterioIOError
 from rasterio.transform import from_origin
 
 import geo_cloudify.explore as geo_cloudify_explore
-from geo_cloudify.explore import SKIP_REASON, UNSUPPORTED_REASON, build_plan
+from geo_cloudify.explore import NETCDF_REASON, SKIP_REASON, UNSUPPORTED_REASON, build_plan
 from geo_cloudify.plan import Action, Kind
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "data"
@@ -28,6 +29,14 @@ def _write_tif(path, *, width=600, height=600, dtype="uint8", crs="EPSG:4326", n
             dst.write(np.zeros((1, height, width), dtype=dtype))
             if with_ovr:
                 dst.build_overviews([2, 4], Resampling.nearest)
+    return path
+
+
+def _write_netcdf(path, tmp_path):
+    """Write a georeferenced single-grid NetCDF at path (any extension) and return path."""
+    tif = _write_tif(tmp_path / "grid_source.tif", width=4, height=3, dtype="float32")
+    rasterio.shutil.copy(tif, path, driver="netCDF")
+    tif.unlink()
     return path
 
 
@@ -262,7 +271,7 @@ def test_already_cog_fixtures_pass_through():
     assert all(item.action is Action.PASS_THROUGH for item in plan.items)
 
 
-def test_netcdf_2d_converts():
+def test_netcdf_2d_fixtures_are_skipped_for_zarr():
     files = sorted((FIXTURES / "netcdf_2d").glob("*.nc"))
     if not files:
         pytest.skip("fixture data not present")
@@ -270,8 +279,78 @@ def test_netcdf_2d_converts():
     plan = build_plan({"src": files}, None)
 
     assert len(plan.items) == len(files)
-    assert all(item.action is Action.CONVERT for item in plan.items)
-    assert all(item.kind is Kind.RASTER for item in plan.items)
+    assert [item.files for item in plan.items] == [[str(path)] for path in files]
+    assert all(item.action is Action.SKIP for item in plan.items)
+    assert all(item.skip_reason == NETCDF_REASON for item in plan.items)
+
+
+def test_netcdf_reason_names_zarr_as_a_later_version():
+    assert "Zarr" in NETCDF_REASON
+    assert "later version" in NETCDF_REASON
+    assert "/" not in NETCDF_REASON
+
+
+def test_netcdf_is_found_by_opening_the_file(tmp_path):
+    netcdf = _write_netcdf(tmp_path / "grid.dat", tmp_path)
+    geotiff_named_nc = _write_tif(tmp_path / "grid.nc")
+
+    plan = build_plan({"src": [netcdf, geotiff_named_nc]}, None)
+
+    actions = {Path(item.files[0]).name: item for item in plan.items}
+    assert actions["grid.dat"].action is Action.SKIP
+    assert actions["grid.dat"].skip_reason == NETCDF_REASON
+    assert str(tmp_path) not in actions["grid.dat"].skip_reason
+    assert actions["grid.nc"].action is Action.CONVERT
+
+
+def test_multi_time_netcdf_is_skipped_for_zarr(tmp_path):
+    source = tmp_path / "steps.tif"
+    with rasterio.open(
+        source, "w", driver="GTiff", width=4, height=3, count=3, dtype="float32",
+        crs="EPSG:4326", transform=from_origin(0, 3, 1, 1),
+    ) as ds:
+        ds.write(np.ones((3, 3, 4), dtype="float32"))
+        # GDAL writes the bands as one variable with a time dimension.
+        ds.update_tags(
+            NETCDF_DIM_EXTRA="{time}", NETCDF_DIM_time_DEF="{3,6}", NETCDF_DIM_time_VALUES="{0,1,2}"
+        )
+    netcdf = tmp_path / "steps.nc"
+    rasterio.shutil.copy(source, netcdf, driver="netCDF")
+    source.unlink()
+    with rasterio.open(netcdf) as ds:
+        assert ds.count == 3 and not ds.subdatasets
+
+    plan = build_plan({"src": [netcdf]}, None)
+
+    assert [(item.action, item.skip_reason) for item in plan.items] == [(Action.SKIP, NETCDF_REASON)]
+
+
+def test_multi_variable_netcdf_is_skipped_for_zarr(tmp_path):
+    source = tmp_path / "vars.tif"
+    with rasterio.open(
+        source, "w", driver="GTiff", width=4, height=3, count=3, dtype="float32",
+        crs="EPSG:4326", transform=from_origin(0, 3, 1, 1),
+    ) as ds:
+        ds.write(np.ones((3, 3, 4), dtype="float32"))
+    # Without a time dimension GDAL writes each band as its own variable.
+    netcdf = tmp_path / "vars.nc"
+    rasterio.shutil.copy(source, netcdf, driver="netCDF")
+    source.unlink()
+    with rasterio.open(netcdf) as ds:
+        assert ds.count == 0 and len(ds.subdatasets) == 3
+
+    plan = build_plan({"src": [netcdf]}, None)
+
+    assert [(item.action, item.skip_reason) for item in plan.items] == [(Action.SKIP, NETCDF_REASON)]
+
+
+def test_netcdf_skip_is_not_logged_as_unreadable(tmp_path, caplog):
+    netcdf = _write_netcdf(tmp_path / "grid.dat", tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="geo_cloudify.explore"):
+        build_plan({"src": [netcdf]}, None)
+
+    assert "1 skipped (0 could not be read)" in caplog.text
 
 
 def test_cog_kwargs_reach_every_item(tmp_path):

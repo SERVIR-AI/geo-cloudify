@@ -13,7 +13,7 @@ With no SOURCE, a sample set from tests/fixtures/data is sent:
   - a striped CHIRTS GeoTIFF with {"nodata": -9999}
   - two mangrove tiles that are tiled but not in COG order (colour table)
   - a Copernicus DEM tile that is already a COG (passed through)
-  - a single-grid Bio-ORACLE NetCDF (no CRS; the API assumes EPSG:4326)
+  - two single-grid Bio-ORACLE NetCDFs (skipped: NetCDF goes to Zarr, a later version)
 --sidecar-sample also builds a raster whose georeferencing lives only in its
 companion files (.tfw world file, .aux.xml with the CRS and nodata, external .ovr)
 and sends it, to show those files being combined into one COG.

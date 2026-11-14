@@ -15,17 +15,19 @@ Each downloaded file is checked in this order. The first rule that matches decid
 | Check | Result | Examples |
 |---|---|---|
 | The file cannot be opened as a raster by GDAL | Skipped | Text files, Shapefiles, GeoJSON, a world file whose raster is missing |
+| GDAL opens the file with its netCDF driver (any shape, whatever the file name) | Skipped (NetCDF goes to Zarr, which comes in a later version) | A single 2D grid or a time series in `.nc` |
 | The raster has no location: no CRS and no geotransform | Skipped | A PNG preview image; a raster located only by ground control points (GCPs) |
-| The file is NetCDF or HDF with more than one band, or with subdatasets | Skipped (a data cube, with a time or depth dimension) | A NetCDF with several time steps |
+| The file is HDF with more than one band, or with subdatasets | Skipped (a data cube, with a time or depth dimension) | An HDF5 file with several time steps |
 | The file already passes COG validation (`rio_cogeo.cog_validate`, no errors) | Passed through unchanged | ESA WorldCover and Copernicus DEM tiles; any raster that fits in one 512x512 block |
-| Anything else | Converted to a COG | Striped or untiled GeoTIFFs, tiled GeoTIFFs in the wrong order, ERDAS `.img`, a NetCDF with a single 2D grid |
+| Anything else | Converted to a COG | Striped or untiled GeoTIFFs, tiled GeoTIFFs in the wrong order, ERDAS `.img` |
 
-Multi-band GeoTIFFs are converted like any other raster. Only NetCDF and HDF files are treated as cubes when they have more than one band, because GDAL reads each time or depth step as a band.
+Multi-band GeoTIFFs are converted like any other raster. Only HDF files are treated as cubes when they have more than one band, because GDAL reads each time or depth step as a band.
 
 A skipped file carries one reason in the job plan:
 
 - A file GDAL cannot open as a raster gets `not a raster GDAL can open (a vector, a text file, or a damaged file; vectors come in a later version)`. GDAL uses one sentence for all of these, so the reason names the likely causes rather than repeating it.
-- A file GDAL opens but that is not a COG-bound raster gets `not a COG-bound raster (not georeferenced, or a NetCDF/HDF cube)`. `detect()` answers yes or no, not why, so the reason names both causes.
+- A NetCDF file gets `NetCDF is converted to Zarr, not COG; Zarr comes in a later version`.
+- A file GDAL opens but that is not a COG-bound raster gets `not a COG-bound raster (not georeferenced, or an HDF cube)`. `detect()` answers yes or no, not why, so the reason names both causes.
 - A file that fails later, after GDAL accepted it, gets `could not read: <GDAL's message>`.
 
 Skip reasons never contain the server's folder path. Skips are summarised in one log line per source; only a failure after GDAL accepted a file is logged as a warning.
@@ -34,7 +36,7 @@ Companion files travel with their raster: the files GDAL reports it opened (for 
 
 ## What a conversion keeps and changes
 
-- **CRS**: the source CRS is kept. A NetCDF with no CRS is assumed to be EPSG:4326; this is logged and noted on the job's plan.
+- **CRS**: the source CRS is kept.
 - **Nodata**: taken from `cog_kwargs` if given, otherwise from the file. If neither has one, it is left unset, and the plan notes that it can be set with `nodata` in `cog_kwargs`. The service never guesses a value (for example, an undeclared -9999).
 - **Overviews**: rebuilt. Rasters with a colour table use nearest resampling; all others use average. Pass `RESAMPLING=NEAREST` for class maps without a colour table.
 - **Defaults** (from `config.yaml`): `COMPRESS=DEFLATE`, `BLOCKSIZE=512`. `PREDICTOR=YES` is added for rasters without a colour table.

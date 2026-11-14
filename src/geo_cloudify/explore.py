@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 
 # One reason for every file GDAL opens but that is not a COG-bound raster.
 # `detect()` answers yes or no, not why, so the reason names the two causes.
-SKIP_REASON = "not a COG-bound raster (not georeferenced, or a NetCDF/HDF cube)"
+SKIP_REASON = "not a COG-bound raster (not georeferenced, or an HDF cube)"
+
+# NetCDF is never converted to COG: it goes to Zarr, which is not built yet.
+NETCDF_REASON = "NetCDF is converted to Zarr, not COG; Zarr comes in a later version"
 
 # GDAL's sentence for a file it cannot open at all. It is the same text for a vector
 # file, a text file and a corrupt raster, and it would read as if a Shapefile were an
@@ -97,6 +100,7 @@ def _plan_source(source: str, files: list[Path], cog_kwargs: dict | None) -> lis
     companions: dict[Path, list[Path]] = {}
     read_errors: dict[Path, str] = {}  # resolved path -> GDAL's message
     handled: set[Path] = set()  # resolved paths already placed in an item
+    netcdf: set[Path] = set()  # resolved paths GDAL opened as NetCDF
 
     # Pass 1: find the main files and their companions.
     for path in ordered:
@@ -105,6 +109,10 @@ def _plan_source(source: str, files: list[Path], cog_kwargs: dict | None) -> lis
             # GDAL's own message; `detect()` would swallow that error into False.
             with rasterio.open(path) as dataset:
                 found = _companions(dataset, path, by_resolved)
+                is_netcdf = cog_explore.is_netcdf_dataset(dataset)
+            if is_netcdf:
+                netcdf.add(path.resolve())
+                continue
             if not cog_explore.detect(path):
                 continue
             companions[path] = found
@@ -137,7 +145,13 @@ def _plan_source(source: str, files: list[Path], cog_kwargs: dict | None) -> lis
         if resolved in handled:
             continue
         message = read_errors.get(resolved)
-        items.append(_skip_item(source, path, _plain_reason(path, message) if message else SKIP_REASON))
+        if message:
+            reason = _plain_reason(path, message)
+        elif resolved in netcdf:
+            reason = NETCDF_REASON
+        else:
+            reason = SKIP_REASON
+        items.append(_skip_item(source, path, reason))
 
     _log_summary(source, len(ordered), items)
     return items
@@ -148,7 +162,7 @@ def _log_summary(source: str, file_count: int, items: list[PlanItem]) -> None:
     converted = sum(1 for item in items if item.action is Action.CONVERT)
     passed = sum(1 for item in items if item.action is Action.PASS_THROUGH)
     skipped = [item for item in items if item.action is Action.SKIP]
-    unreadable = sum(1 for item in skipped if item.skip_reason != SKIP_REASON)
+    unreadable = sum(1 for item in skipped if item.skip_reason not in (SKIP_REASON, NETCDF_REASON))
     logger.info(
         "source %s: %d file(s): %d to convert, %d passed through, %d skipped (%d could not be read)",
         source,

@@ -8,15 +8,12 @@ import logging
 from pathlib import Path
 
 import rasterio
-from rasterio.crs import CRS
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.config import get_config
 from geo_cloudify.plan import Action, Kind, PlanItem, RasterFingerprint
 
 logger = logging.getLogger(__name__)
-
-EPSG_4326_WKT = CRS.from_epsg(4326).to_wkt()
 
 # GDAL COG driver creation options a caller may set, plus NODATA (handled separately,
 # not a driver option). NUM_THREADS is not one: it comes from config.
@@ -36,20 +33,33 @@ COG_COMPRESS = frozenset(
 # LEVEL range per codec; any codec not listed uses the widest range.
 LEVEL_RANGES = {"DEFLATE": (1, 12), "LERC_DEFLATE": (1, 12), "ZSTD": (1, 22), "LERC_ZSTD": (1, 22), "LZMA": (0, 9)}
 
-CUBE_DRIVERS = frozenset({"netcdf", "hdf5", "hdf5image", "hdf4"})
+CUBE_DRIVERS = frozenset({"hdf5", "hdf5image", "hdf4"})
+# NetCDF always goes to Zarr, never to COG, whatever its shape.
+NETCDF_DRIVER = "netcdf"
 DEFAULT_TRANSFORM = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 
 def detect(path: Path) -> bool:
     """Return True if the file is a COG-bound raster: georeferenced and single-grid.
 
-    Returns False if the file cannot be opened as a raster, is not georeferenced
-    (no CRS and the default transform), or is a NetCDF/HDF5 cube (a time or depth
-    dimension). Cubes are skipped here.
+    Args:
+        path: the file to check. It is opened with GDAL; the extension is not used.
+
+    Returns:
+        True for a georeferenced raster that is not NetCDF and not an HDF cube.
+        False if the file cannot be opened as a raster, is NetCDF (opened by GDAL's
+        netCDF driver; NetCDF goes to Zarr, never to COG), is not georeferenced
+        (no CRS and the default transform), or is an HDF cube (a time or depth
+        dimension).
+
+    Raises:
+        Nothing: rasterio errors on opening are caught and give False.
     """
     try:
         with rasterio.open(path) as ds:
             if ds.count < 1:
+                return False
+            if is_netcdf_dataset(ds):
                 return False
             if ds.crs is None and _is_default_transform(ds.transform):
                 return False
@@ -58,6 +68,23 @@ def detect(path: Path) -> bool:
             return True
     except rasterio.errors.RasterioError:
         return False
+
+
+def is_netcdf_dataset(ds) -> bool:
+    """Return True if the open dataset was read by GDAL's netCDF driver.
+
+    Args:
+        ds: an open rasterio dataset (anything with a `driver` attribute). The
+            driver is checked, not the file name, so a GeoTIFF named `.nc` is not
+            NetCDF and a NetCDF named `.dat` is.
+
+    Returns:
+        True for a NetCDF file (any shape, including NetCDF4), False otherwise.
+
+    Raises:
+        Nothing.
+    """
+    return (ds.driver or "").lower() == NETCDF_DRIVER
 
 
 def is_cog(path: Path) -> bool:
@@ -138,9 +165,8 @@ def explore(main: Path, companions: list[Path], source: str, cog_kwargs: dict | 
       settings (including NODATA and CRS for convert to apply), the source
       fingerprint for verify, the `lossy` flag, and notes for the caller.
 
-    Two cases are noted on the entry and logged as warnings, never guessed:
-    a NetCDF with no CRS (assumed EPSG:4326) and a raster with no nodata value
-    (left unset; the caller can set `nodata` in `cog_kwargs`).
+    A raster with no nodata value is noted on the entry and logged as a warning,
+    never guessed (left unset; the caller can set `nodata` in `cog_kwargs`).
 
     Args:
         main: the raster file to explore.
@@ -170,14 +196,6 @@ def explore(main: Path, companions: list[Path], source: str, cog_kwargs: dict | 
         )
 
     notes: list[str] = []
-    # A COG needs a CRS. NetCDF climate and ocean data without one is almost
-    # always plain latitude/longitude, so assume EPSG:4326 and say so.
-    # Setting it on the fingerprint means settings["CRS"] tells convert to assign it.
-    if fp.crs is None and _driver(main) == "netcdf":
-        fp.crs = EPSG_4326_WKT
-        notes.append("no CRS; assumed EPSG:4326")
-        logger.warning("source %s has no CRS; assumed EPSG:4326", source)
-
     # Defaults, then values from the data, then the request's cog_kwargs (which win).
     settings = resolve_settings(fp, cog_kwargs)
 
@@ -201,19 +219,13 @@ def explore(main: Path, companions: list[Path], source: str, cog_kwargs: dict | 
     )
 
 
-def _driver(path: Path) -> str:
-    """Return the GDAL driver name for the file, in lowercase."""
-    with rasterio.open(path) as ds:
-        return (ds.driver or "").lower()
-
-
 def _is_default_transform(transform) -> bool:
     """Return True if the transform is GDAL's default (identity) geotransform."""
     return transform.to_gdal() == DEFAULT_TRANSFORM
 
 
 def _is_cube(ds) -> bool:
-    """Return True for a NetCDF/HDF5 file with more than one band or subdatasets."""
+    """Return True for an HDF file with more than one band or subdatasets."""
     if (ds.driver or "").lower() not in CUBE_DRIVERS:
         return False
     return ds.count > 1 or bool(ds.subdatasets)

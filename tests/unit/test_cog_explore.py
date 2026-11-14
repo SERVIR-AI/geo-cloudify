@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import rasterio
+import rasterio.shutil
 from rasterio.transform import from_origin
 
 from geo_cloudify.cog.explore import (
@@ -15,6 +16,7 @@ from geo_cloudify.cog.explore import (
     explore,
     fingerprint,
     is_cog,
+    is_netcdf_dataset,
     resolve_settings,
 )
 from geo_cloudify.plan import Action, Kind, RasterFingerprint
@@ -29,6 +31,14 @@ def _write_tif(path, *, count=1, dtype="uint8", crs="EPSG:4326", nodata=None, tr
         dtype=dtype, crs=crs, transform=transform, nodata=nodata,
     ) as dst:
         dst.write(np.zeros((count, height, width), dtype=dtype))
+    return path
+
+
+def _write_netcdf(path, tmp_path):
+    """Write a georeferenced single-grid NetCDF at path (any extension) and return path."""
+    tif = _write_tif(tmp_path / "grid_source.tif", dtype="float32")
+    rasterio.shutil.copy(tif, path, driver="netCDF")
+    tif.unlink()
     return path
 
 
@@ -59,21 +69,40 @@ def test_detect_text_file(tmp_path):
     assert detect(path) is False
 
 
-def test_detect_single_grid_netcdf():
+def test_detect_single_grid_netcdf_fixture_is_not_cog_bound():
     path = FIXTURES / "netcdf_2d" / "biooracle_thetao_2010_costarica.nc"
     if not path.exists():
         pytest.skip("fixture data not present")
-    assert detect(path) is True
+    assert detect(path) is False
+
+
+def test_detect_netcdf_by_opening_not_by_extension(tmp_path):
+    path = _write_netcdf(tmp_path / "grid.dat", tmp_path)
+    with rasterio.open(path) as ds:
+        assert ds.driver == "netCDF" and ds.crs is not None and ds.count == 1
+    assert detect(path) is False
+
+
+def test_is_netcdf_dataset(tmp_path):
+    with rasterio.open(_write_netcdf(tmp_path / "grid.dat", tmp_path)) as ds:
+        assert is_netcdf_dataset(ds) is True
+    with rasterio.open(_write_tif(tmp_path / "a.nc")) as ds:
+        assert is_netcdf_dataset(ds) is False
 
 
 # --- cube detection ----------------------------------------------------------
 
-def test_is_cube_multiband_netcdf():
-    assert _is_cube(SimpleNamespace(driver="netCDF", count=2, subdatasets=[])) is True
+def test_is_cube_multiband_hdf5():
+    assert _is_cube(SimpleNamespace(driver="HDF5Image", count=2, subdatasets=[])) is True
 
 
-def test_is_cube_single_band_netcdf():
-    assert _is_cube(SimpleNamespace(driver="netCDF", count=1, subdatasets=[])) is False
+def test_is_cube_single_band_hdf5():
+    assert _is_cube(SimpleNamespace(driver="HDF5Image", count=1, subdatasets=[])) is False
+
+
+def test_is_cube_netcdf_is_not_a_cube_driver():
+    # NetCDF is skipped earlier, by driver, whatever its shape.
+    assert _is_cube(SimpleNamespace(driver="netCDF", count=2, subdatasets=[])) is False
 
 
 def test_is_cube_geotiff_multiband():

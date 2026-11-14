@@ -225,7 +225,7 @@ def test_non_convert_item_raises(tmp_path):
         to_cog(item, tmp_path, tmp_path / "out")
 
 
-@pytest.mark.parametrize("folder", ["striped_geotiff", "tiled_geotiff_not_cog", "netcdf_2d"])
+@pytest.mark.parametrize("folder", ["striped_geotiff", "tiled_geotiff_not_cog"])
 def test_fixture_files_become_lossless_cogs(folder, tmp_path):
     files = sorted((FIXTURES / folder).glob("*"))
     if not files:
@@ -234,6 +234,3 @@ def test_fixture_files_become_lossless_cogs(folder, tmp_path):
         item = _item(main)
         output = to_cog(item, FIXTURES, tmp_path / "out")
         _assert_lossless(item, output)
-        if folder == "netcdf_2d":
-            with rasterio.open(output) as out:
-                assert out.crs.to_epsg() == 4326
