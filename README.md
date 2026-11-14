@@ -8,6 +8,47 @@ Converts geospatial files to cloud-optimized formats. Rasters become Cloud Optim
 - With the FastAPI service: `uv sync --extra cog --extra api`. Everything: `uv sync --all-extras`.
 - Start the service: `uv run uvicorn geo_cloudify.api:app`.
 
+## Merge tiles into one COG
+
+Large exports (for example from Earth Engine) come as several tiles on one grid. Two plain functions merge them into one COG and check it. They need only the `cog` extra.
+
+```python
+from geo_cloudify.cog.merge import merge_to_cog
+from geo_cloudify.cog.verify import check_merged_cog
+
+tiles = [
+    "RLCMS_2000_0000000000-0000000000.tif",
+    "RLCMS_2000_0000000000-0000065536.tif",
+    # ... the other tiles
+]
+merge_to_cog(tiles, "RLCMS_2000.tif", "mode")
+result = check_merged_cog(tiles, "RLCMS_2000.tif")
+if not result.passed:
+    for problem in result.problems:
+        print(problem.field, problem.detail)
+```
+
+`merge_to_cog(tiles, output, overview_resampling)`:
+
+- `tiles`: a list or tuple of local paths, GDAL `/vsi...` paths, or URLs (`http(s)`, `ftp`, `s3`, `gs`, `az`, `oss`, `file`). Reading from cloud storage needs that provider's credentials set up for GDAL. A single path instead of a list is refused.
+- `overview_resampling`: `nearest` or `mode` for class data, `average` for continuous data. Nothing else is accepted.
+- Refuses tiles that differ in CRS, pixel size, grid alignment (an origin offset that is not a whole number of pixels), data type, band count or nodata, and tiles that overlap. The error (`TileMismatchError`) names the tile and the field.
+- Places tiles pixel for pixel, never resampled. The output covers the union of the tiles; gaps are filled with the nodata value, or 0 when the tiles have none.
+- Keeps the tiles' CRS, grid, data type and nodata. It never sets a nodata the tiles do not have.
+- Writes a tiled, compressed COG (codec and block size from `config.yaml` in the current folder, or the file named by `GEO_CLOUDIFY_CONFIG`; `DEFLATE` and 512 when there is no config file) with overviews built fresh by the given method. Colour table, band descriptions, scale, offset and metadata come from the first tile.
+- Refuses to overwrite an existing output. A failed write leaves no output and no temporary files.
+- Works in blocks, so a whole raster is never held in memory.
+
+`check_merged_cog(tiles, output)` returns a `MergeCheck` with every problem found (`passed` is true when there are none). It checks that the output:
+
+- is a valid COG (`rio_cogeo.cog_validate`; errors and warnings both fail);
+- has overviews down to one block, or none when it fits in one block;
+- has the tiles' CRS, transform, size, band count, data type and nodata;
+- comes from tiles that do not overlap;
+- holds, per band, the same count of each pixel value as the tiles together (plus the gap fill). This catches dropped, doubled or changed tiles. Counts are made at full resolution, in windows. It is meant for class data: for types wider than 16 bits, a band with more than about one million (2^20) distinct values is reported as a problem instead of counted.
+
+It raises `TileMismatchError` when the tiles do not share one grid, and `ValueError` for complex data or when `tiles` is empty or a single path, instead of returning a problem.
+
 ## Which rasters are converted, passed through or skipped
 
 Each downloaded file is checked in this order. The first rule that matches decides what happens to it.
