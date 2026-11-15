@@ -45,7 +45,11 @@ if not result.passed:
 - has overviews down to one block, or none when it fits in one block;
 - has the tiles' CRS, transform, size, band count, data type and nodata;
 - comes from tiles that do not overlap;
-- holds, per band, the same count of each pixel value as the tiles together (plus the gap fill). This catches dropped, doubled or changed tiles. Counts are made at full resolution, in windows. It is meant for class data: for types wider than 16 bits, a band with more than about one million (2^20) distinct values is reported as a problem instead of counted.
+- holds, per band, the same count of each pixel value as the tiles together (plus the gap fill). This catches dropped, doubled or changed tiles. Counts are made at full resolution, in windows.
+
+Pixels are verified by these value counts only, which assumes class data. When a band holds more than 100,000 distinct values, the count check is skipped: no problem is added, the other checks still run, and `counts_checked` is false. When a band goes over the limit in only one of the tiles or the output, that is a "pixel counts" problem. A caller that needs the count proof reads `counts_checked` as well as `passed`.
+
+`compare_pixels(tiles, output)` (in `geo_cloudify.cog.verify`) compares every pixel of the output with the tiles, for any data type, in windows. It returns one `pixels` problem per band that differs, with the first differing places. `check_merged_cog` does not run it.
 
 It raises `TileMismatchError` when the tiles do not share one grid, and `ValueError` for complex data or when `tiles` is empty or a single path, instead of returning a problem.
 

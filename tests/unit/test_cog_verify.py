@@ -1,5 +1,6 @@
-"""Unit tests for checking a merged COG against its tiles (check_merged_cog)."""
+"""Unit tests for checking a merged COG against its tiles (check_merged_cog, compare_pixels)."""
 
+import tracemalloc
 from collections import Counter
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from rasterio.transform import from_origin
 
 from geo_cloudify.cog import verify
 from geo_cloudify.cog.merge import TileMismatchError, merge_to_cog
-from geo_cloudify.cog.verify import MergeCheck, check_merged_cog
+from geo_cloudify.cog.verify import MergeCheck, check_merged_cog, compare_pixels
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
 X0, Y0, PIXEL = -1260450.0, 3413550.0, 30.0
@@ -80,6 +81,7 @@ def test_good_merge_passes(tiles, merged):
     assert isinstance(check, MergeCheck)
     assert check.problems == ()
     assert check.passed
+    assert check.counts_checked
     with rasterio.open(merged) as out:
         assert out.overviews(1)  # 911 x 787 is larger than one 512 block
 
@@ -224,6 +226,7 @@ def test_dropped_tile_is_caught(tmp_path, tiles):
     output = merge_to_cog(without_ne, tmp_path / "dropped.tif", "mode")
     check = check_merged_cog(tiles, output)
     assert _fields(check) == {"pixel counts"}
+    assert check.counts_checked
 
 
 @pytest.mark.parametrize("new_value", [21, 0])  # 0 is nodata, and must still count
@@ -237,6 +240,7 @@ def test_changed_pixel_is_caught(tmp_path, tiles, new_value):
     output = merge_to_cog(changed, tmp_path / "changed.tif", "mode")
     check = check_merged_cog(original, output)
     assert _fields(check) == {"pixel counts"}
+    assert check.counts_checked
     message = str(check.problems[0])
     assert f"value {old_value}" in message and f"value {new_value}" in message
 
@@ -248,12 +252,12 @@ def test_overlapping_tiles_are_reported(tmp_path, tiles, merged):
     assert "overlap" in _fields(check)
 
 
-def test_many_distinct_float_values_stay_bounded(tmp_path, monkeypatch):
+def test_many_distinct_float_values_skip_the_count_check(tmp_path, monkeypatch):
     rng = np.random.default_rng(5)
     data = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
     tiles = _layout(tmp_path / "tiles", data, nodata=None)
     output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
-    monkeypatch.setattr(verify, "_MAX_DISTINCT_VALUES", 1000)
+    # 256 x 256 windows: each holds fewer distinct values than the limit, so the tally grows.
     monkeypatch.setattr(verify, "_WINDOW_PIXELS", 4096)
     sizes = []
 
@@ -264,9 +268,122 @@ def test_many_distinct_float_values_stay_bounded(tmp_path, monkeypatch):
 
     monkeypatch.setattr(verify, "Counter", RecordingCounter)
     check = check_merged_cog(tiles, output)
-    assert [p.field for p in check.problems] == ["pixel counts"]
-    assert "not checked" in check.problems[0].detail
-    assert sizes and max(sizes) <= 1000 + 256 * 256  # the cap plus one 256 x 256 block window
+    assert check.problems == ()
+    assert not check.counts_checked
+    assert sizes and max(sizes) <= 2 * 100_000
+
+
+def test_distinct_value_limit_is_100000(tmp_path):
+    exactly = np.arange(100_000, dtype="float32").reshape(1, 250, 400)
+    one_more = (np.arange(251 * 400) % 100_001).astype("float32").reshape(1, 251, 400)
+    at_limit = [_write(tmp_path / "at_limit.tif", exactly, nodata=None)]
+    over_limit = [_write(tmp_path / "over_limit.tif", one_more, nodata=None)]
+    at_output = merge_to_cog(at_limit, tmp_path / "at_limit_merged.tif", "average")
+    over_output = merge_to_cog(over_limit, tmp_path / "over_limit_merged.tif", "average")
+    assert check_merged_cog(at_limit, at_output).counts_checked
+    assert not check_merged_cog(over_limit, over_output).counts_checked
+
+
+def test_skipped_count_check_keeps_the_other_checks_and_bounded_memory(tmp_path):
+    rng = np.random.default_rng(6)
+    data = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
+    tiles = _layout(tmp_path / "tiles", data, nodata=None)
+    output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
+    no_overviews = tmp_path / "no_overviews.tif"
+    rasterio.shutil.copy(str(output), str(no_overviews), driver="COG", OVERVIEWS="NONE")
+    # The nw tile (530 x 600) is one window with about 318,000 distinct values.
+    # Held as Python ints in a Counter that is well over 20 MB.
+    tracemalloc.start()
+    try:
+        check = check_merged_cog(tiles, no_overviews)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert "overviews" in _fields(check)
+    assert "pixel counts" not in _fields(check)
+    assert not check.counts_checked
+    assert not check.passed
+    assert peak < 16 * 1024 * 1024, peak
+
+
+@pytest.mark.parametrize("window_pixels", [None, 4096])
+def test_output_over_the_limit_fails_when_the_tiles_are_within_it(tmp_path, monkeypatch, window_pixels):
+    rng = np.random.default_rng(12)
+    classes = {name: rng.integers(0, 5, size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
+    noise = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
+    tiles = _layout(tmp_path / "classes", classes, nodata=None)
+    output = merge_to_cog(_layout(tmp_path / "noise", noise, nodata=None), tmp_path / "noise.tif", "average")
+    if window_pixels:
+        # Each 64 x 64 window holds fewer distinct values than the limit, so the tally grows.
+        monkeypatch.setattr(verify, "_WINDOW_PIXELS", window_pixels)
+    check = check_merged_cog(tiles, output)
+    assert _fields(check) == {"pixel counts"}
+    assert "band 1: output holds more than 100,000 distinct values, tiles hold 5" in str(check.problems[0])
+    assert check.counts_checked
+    assert not check.passed
+
+
+@pytest.mark.parametrize("window_pixels", [None, 4096])
+def test_tiles_over_the_limit_fail_when_the_output_is_within_it(tmp_path, monkeypatch, window_pixels):
+    rng = np.random.default_rng(13)
+    noise = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
+    classes = {name: rng.integers(0, 5, size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
+    tiles = _layout(tmp_path / "noise", noise, nodata=None)
+    output = merge_to_cog(_layout(tmp_path / "classes", classes, nodata=None), tmp_path / "classes.tif", "mode")
+    if window_pixels:
+        # Each 64 x 64 window holds fewer distinct values than the limit, so the tally grows.
+        monkeypatch.setattr(verify, "_WINDOW_PIXELS", window_pixels)
+    check = check_merged_cog(tiles, output)
+    assert _fields(check) == {"pixel counts"}
+    assert "band 1: tiles hold more than 100,000 distinct values, output holds 5" in str(check.problems[0])
+    assert check.counts_checked
+    assert not check.passed
+
+
+def test_gap_fill_past_the_limit_fails_when_the_output_is_within_it(tmp_path):
+    # 100,000 distinct values in the tiles, none of them 0; the gap adds 0 as one more.
+    values = (np.arange(100_000, dtype="float32") + 1).reshape(1, 250, 400)
+    tiles = [
+        _write(tmp_path / "west.tif", values, nodata=None),
+        _write(tmp_path / "east.tif", values, x=X0 + 401 * PIXEL, nodata=None),
+    ]
+    other = [_write(tmp_path / "other.tif", np.ones((1, 250, 801), dtype="float32"), nodata=None)]
+    output = merge_to_cog(other, tmp_path / "other_merged.tif", "average")
+    check = check_merged_cog(tiles, output)
+    assert _fields(check) == {"pixel counts"}
+    assert "band 1: tiles hold more than 100,000 distinct values, output holds 1" in str(check.problems[0])
+    assert check.counts_checked
+
+
+def test_gap_fill_past_the_limit_skips_the_count_check(tmp_path):
+    # 100,000 distinct values in the tiles, none of them 0; the gap adds 0 as one more.
+    values = (np.arange(100_000, dtype="float32") + 1).reshape(1, 250, 400)
+    tiles = [
+        _write(tmp_path / "west.tif", values, nodata=None),
+        _write(tmp_path / "east.tif", values, x=X0 + 401 * PIXEL, nodata=None),
+    ]
+    output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
+    check = check_merged_cog(tiles, output)
+    assert check.problems == ()
+    assert not check.counts_checked
+
+
+def test_check_merged_cog_does_not_compare_pixels(tiles, merged, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("compare_pixels was called")
+
+    monkeypatch.setattr(verify, "compare_pixels", refuse)
+    check = check_merged_cog(tiles, merged)
+    assert check.passed and check.counts_checked
+
+
+def test_nothing_in_the_package_calls_compare_pixels():
+    source = Path(verify.__file__).parents[1]
+    callers = [
+        path for path in source.rglob("*.py")
+        if "compare_pixels(" in path.read_text().replace("def compare_pixels(", "")
+    ]
+    assert callers == []
 
 
 def test_counts_are_made_in_windows(tmp_path, tiles, merged, monkeypatch):
@@ -285,3 +402,124 @@ def test_counts_are_made_in_windows(tmp_path, tiles, merged, monkeypatch):
     for width, height, window in reads:
         assert window is not None
         assert window.width * window.height < width * height
+
+
+# --- compare_pixels -------------------------------------------------------------------
+
+
+def _pixel_problems(problems) -> list[str]:
+    """Return the problems as strings, after checking each is a "pixels" problem."""
+    assert all(problem.field == "pixels" for problem in problems)
+    return [str(problem) for problem in problems]
+
+
+def test_compare_pixels_good_merge_has_no_problems(tiles, merged):
+    assert compare_pixels(tiles, merged) == ()
+
+
+@pytest.mark.parametrize("window_pixels", [None, 4096])
+def test_compare_pixels_finds_a_changed_pixel_and_its_place(tmp_path, monkeypatch, window_pixels):
+    if window_pixels:
+        # Small windows, so the changed pixel lies in a window that does not start at 0, 0.
+        monkeypatch.setattr(verify, "_WINDOW_PIXELS", window_pixels)
+    data = _tile_data()
+    data["sw"][0, 100, 200] = 22
+    data["se"][0, 120, 50] = 22
+    original = _layout(tmp_path / "original", data)
+    data["sw"][0, 100, 200] = 21
+    data["se"][0, 120, 50] = 20
+    changed = _layout(tmp_path / "changed", data)
+    output = merge_to_cog(changed, tmp_path / "changed.tif", "mode")
+    problems = _pixel_problems(compare_pixels(original, output))
+    assert len(problems) == 1
+    assert "band 1: 2 pixels differ" in problems[0]
+    # sw sits below nw (530 rows), so its pixel (200, 100) is at column 200, row 630.
+    assert "column 200, row 630: expected 22, found 21" in problems[0]
+    # se starts at column 600, past the first 512-pixel block, so its pixel (50, 120)
+    # is at column 650, row 650.
+    assert "column 650, row 650: expected 22, found 20" in problems[0]
+
+
+def test_compare_pixels_finds_a_dropped_tile(tmp_path, tiles):
+    without_ne = [t for t in tiles if t.name != "ne.tif"]
+    output = merge_to_cog(without_ne, tmp_path / "dropped.tif", "mode")
+    problems = _pixel_problems(compare_pixels(tiles, output))
+    assert len(problems) == 1 and "band 1:" in problems[0]
+
+
+def test_compare_pixels_finds_a_gap_that_is_not_fill(tmp_path):
+    tiles = _layout(tmp_path / "tiles", _tile_data(), gap=7)
+    filler = _write(tmp_path / "filler.tif", np.full((1, 787, 7), 5, dtype="uint8"), x=X0 + 600 * PIXEL)
+    output = merge_to_cog([*tiles, filler], tmp_path / "filled.tif", "mode")
+    problems = _pixel_problems(compare_pixels(tiles, output))
+    assert len(problems) == 1
+    assert f"{787 * 7} pixels differ" in problems[0]
+    assert "column 600, row 0: expected 0, found 5" in problems[0]
+
+
+def test_compare_pixels_finds_swapped_tiles_that_counts_miss(tmp_path):
+    rng = np.random.default_rng(8)
+    a = rng.integers(0, 23, size=(1, 300, 300)).astype("uint8")
+    b = rng.integers(0, 23, size=(1, 300, 300)).astype("uint8")
+    right = X0 + 300 * PIXEL
+    tiles = [_write(tmp_path / "a.tif", a), _write(tmp_path / "b.tif", b, x=right)]
+    swapped = [_write(tmp_path / "a_swapped.tif", a, x=right), _write(tmp_path / "b_swapped.tif", b)]
+    output = merge_to_cog(swapped, tmp_path / "swapped.tif", "mode")
+    check = check_merged_cog(tiles, output)
+    assert check.passed and check.counts_checked
+    assert len(_pixel_problems(compare_pixels(tiles, output))) == 1
+
+
+def test_compare_pixels_handles_many_distinct_float_values(tmp_path, monkeypatch):
+    rng = np.random.default_rng(9)
+    data = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
+    tiles = _layout(tmp_path / "tiles", data, gap=3, nodata=None)
+    output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
+    monkeypatch.setattr(verify, "_WINDOW_PIXELS", 65536)
+    # The image holds about 717,000 distinct values: over 20 MB as Python floats,
+    # and about 12 MB in numpy arrays when read as one window.
+    tracemalloc.start()
+    try:
+        problems = compare_pixels(tiles, output)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert problems == ()
+    assert peak < 8 * 1024 * 1024, peak
+    data["se"][0, 5, 6] = 2.5
+    changed = _layout(tmp_path / "changed", data, gap=3, nodata=None)
+    assert len(compare_pixels(changed, output)) == 1
+
+
+def test_compare_pixels_treats_nan_as_equal_to_nan(tmp_path):
+    data = _tile_data("float32")
+    for array in data.values():
+        array[array == 0] = np.nan
+    tiles = _layout(tmp_path / "tiles", data, gap=3, nodata=float("nan"))
+    output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
+    assert compare_pixels(tiles, output) == ()
+
+
+def test_compare_pixels_reads_in_windows(tiles, merged, monkeypatch):
+    monkeypatch.setattr(verify, "_WINDOW_PIXELS", 4096)
+    reads = []
+    real_read = DatasetReader.read
+
+    def windowed_read(self, *args, **kwargs):
+        if kwargs.get("window") is None:
+            raise AssertionError("read without a window")
+        reads.append((self.width, self.height, kwargs["window"]))
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(DatasetReader, "read", windowed_read)
+    assert compare_pixels(tiles, merged) == ()
+    assert reads
+    assert any(window.width * window.height < width * height for width, height, window in reads)
+    assert all(window.width * window.height <= 512 * 512 for _, _, window in reads)
+
+
+def test_compare_pixels_reports_a_different_grid_without_comparing(tmp_path, tiles):
+    wider = _layout(tmp_path / "wider", _tile_data(), gap=7)
+    output = merge_to_cog(wider, tmp_path / "wider.tif", "mode")
+    problems = _pixel_problems(compare_pixels(tiles, output))
+    assert len(problems) == 1 and "not compared" in problems[0]
