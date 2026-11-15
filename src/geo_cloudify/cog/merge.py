@@ -2,21 +2,24 @@
 
 `check_tiles` reads only the tiles' headers and refuses tiles that would be
 changed or misplaced by a merge: a different CRS, pixel size, grid alignment,
-data type, band count or nodata. When they match, it returns the grid that
-covers all of them.
+data type, band count or nodata, or an internal mask. When they match, it
+returns the grid that covers all of them.
 
 `merge_to_cog` checks the tiles, refuses overlapping tiles, writes a small VRT
 (a text file that places each tile on the union grid, pixel for pixel) and lets
 GDAL's COG driver write one COG from it. Pixels are copied, never resampled,
 and GDAL reads in blocks, so a whole raster is never held in memory. The merge
-needs no config file: without one it uses the `CogConfig` defaults.
+reads no config file and no `.env`: its settings are its arguments.
 """
 
+import logging
 import math
+import numbers
 import os
 import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -25,10 +28,12 @@ import rasterio
 import rasterio.dtypes
 import rasterio.shutil
 from rasterio.crs import CRS
+from rasterio.enums import MaskFlags
 from rasterio.transform import Affine
 
-from geo_cloudify.config import CogConfig, get_config
-from geo_cloudify.settings import get_settings
+from geo_cloudify.cog.explore import COG_COMPRESS, check_cog_values
+
+logger = logging.getLogger(__name__)
 
 # How far (in pixels) an origin offset may be from a whole number and still count as aligned.
 ALIGN_TOLERANCE = 1e-6
@@ -52,7 +57,7 @@ class TileMismatchError(ValueError):
     Attributes:
         tile: the tile as the caller gave it (path or URL, as a string).
         field: what differs: "crs", "orientation", "pixel size", "grid alignment",
-            "band count", "data type", "nodata" or "overlap".
+            "band count", "data type", "nodata", "mask" or "overlap".
     """
 
     def __init__(self, tile: str, field: str, detail: str) -> None:
@@ -109,6 +114,9 @@ class _Header:
         height: height in pixels.
         dtypes: one data type per band, so its length is the band count.
         nodatavals: one nodata value per band (None where a band has none).
+        has_mask: True when a band's empty pixels are marked by a mask that is
+            neither a nodata value nor an alpha band (for example an internal
+            GeoTIFF mask).
     """
 
     name: str
@@ -118,6 +126,7 @@ class _Header:
     height: int
     dtypes: tuple[str, ...]
     nodatavals: tuple[float | None, ...]
+    has_mask: bool = False
 
 
 def same_nodata(a: float | None, b: float | None) -> bool:
@@ -138,6 +147,26 @@ def same_nodata(a: float | None, b: float | None) -> bool:
     if math.isnan(a) or math.isnan(b):
         return math.isnan(a) and math.isnan(b)
     return a == b
+
+
+def _has_mask(flags: Sequence[MaskFlags]) -> bool:
+    """Return True when a band's mask flags show a mask that a value copy would lose.
+
+    A band with no mask has `all_valid`, a band masked by nodata has `nodata`,
+    and a colour band masked by an alpha band has `alpha`. Any other set of flags
+    (a per-dataset mask, such as an internal GeoTIFF mask, or a per-band mask)
+    is a mask.
+
+    Args:
+        flags: the band's mask flags, as in `rasterio` `dataset.mask_flag_enums`.
+
+    Returns:
+        True for a mask that is not all-valid, nodata or alpha.
+
+    Raises:
+        Nothing.
+    """
+    return not ({MaskFlags.all_valid, MaskFlags.nodata, MaskFlags.alpha} & set(flags))
 
 
 def _read_header(tile: str | PathLike) -> _Header:
@@ -161,14 +190,17 @@ def _read_header(tile: str | PathLike) -> _Header:
             height=dataset.height,
             dtypes=tuple(dataset.dtypes),
             nodatavals=tuple(dataset.nodatavals),
+            has_mask=any(_has_mask(flags) for flags in dataset.mask_flag_enums),
         )
 
 
 def _check_own_header(header: _Header) -> None:
     """Refuse a tile that cannot be placed on any grid by itself.
 
-    A tile must have a CRS, a north-up transform with no rotation, and one data
-    type and one nodata shared by all its bands.
+    A tile must have a CRS, a north-up transform with no rotation, one data
+    type and one nodata shared by all its bands, and no mask other than nodata
+    or an alpha band (the merge copies values only, so masked pixels would come
+    out as real data).
 
     Args:
         header: the tile's header.
@@ -178,7 +210,7 @@ def _check_own_header(header: _Header) -> None:
 
     Raises:
         TileMismatchError: naming the tile and the field ("crs", "orientation",
-            "data type" or "nodata").
+            "data type", "nodata" or "mask").
     """
     if header.crs is None:
         raise TileMismatchError(header.name, "crs", "the tile has no CRS")
@@ -191,6 +223,11 @@ def _check_own_header(header: _Header) -> None:
         raise TileMismatchError(header.name, "data type", f"bands differ: {header.dtypes}")
     if any(not same_nodata(v, header.nodatavals[0]) for v in header.nodatavals):
         raise TileMismatchError(header.name, "nodata", f"bands differ: {header.nodatavals}")
+    if header.has_mask:
+        raise TileMismatchError(
+            header.name, "mask",
+            "the tile marks empty pixels with a mask, not a nodata value or an alpha band",
+        )
 
 
 def _pixel_offset(header: _Header, ref: _Header) -> tuple[int, int]:
@@ -225,8 +262,10 @@ def check_tiles(tiles: Sequence[str | PathLike]) -> TileGrid:
     The first tile is the reference. Every other tile must have the same CRS
     (compared as a CRS, not as text), pixel size, data type, band count and
     nodata (a tile with nodata and a tile without do not match), and its origin
-    must sit a whole number of pixels from the reference origin. Only headers
-    are read, never pixels. Overlap and gaps are not checked here.
+    must sit a whole number of pixels from the reference origin. A tile whose
+    empty pixels are marked by a mask (not a nodata value or an alpha band) is
+    refused. Only headers are read, never pixels. Overlap and gaps are not
+    checked here.
 
     Args:
         tiles: a list or tuple of one or more local paths or URLs GDAL can open.
@@ -241,7 +280,7 @@ def check_tiles(tiles: Sequence[str | PathLike]) -> TileGrid:
             instead of a sequence of them.
         TileMismatchError: naming the first tile that differs and the field
             ("crs", "orientation", "pixel size", "grid alignment", "band count",
-            "data type" or "nodata").
+            "data type", "nodata" or "mask").
         rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
     """
     return place_tiles(tiles)[0]
@@ -375,7 +414,7 @@ class _BandLook:
         description: the band description, or "" when it has none.
         scale: the band's scale (1.0 when unset).
         offset: the band's offset (0.0 when unset).
-        tags: the band's metadata in the default domain.
+        tags: the band's metadata in the default domain, without `STATISTICS_*` tags.
     """
 
     color_interp: str
@@ -386,10 +425,27 @@ class _BandLook:
     tags: dict[str, str]
 
 
+def _without_statistics(tags: dict[str, str]) -> dict[str, str]:
+    """Return `tags` without the ones whose name starts with "STATISTICS_" (any case).
+
+    Such tags describe one tile, not the merged image.
+
+    Args:
+        tags: metadata keys and values.
+
+    Returns:
+        A new dict holding every other tag.
+
+    Raises:
+        Nothing.
+    """
+    return {key: value for key, value in tags.items() if not key.upper().startswith("STATISTICS_")}
+
+
 def _read_look(tile: str | PathLike) -> tuple[dict[str, str], list[_BandLook]]:
     """Return a tile's dataset metadata and, per band, how it is shown and described.
 
-    No pixels are read.
+    `STATISTICS_*` tags are left out at dataset and band level. No pixels are read.
 
     Args:
         tile: a local path or a URL GDAL can open.
@@ -413,9 +469,9 @@ def _read_look(tile: str | PathLike) -> tuple[dict[str, str], list[_BandLook]]:
                 description=dataset.descriptions[band - 1] or "",
                 scale=dataset.scales[band - 1],
                 offset=dataset.offsets[band - 1],
-                tags=dataset.tags(band),
+                tags=_without_statistics(dataset.tags(band)),
             ))
-        return dataset.tags(), bands
+        return _without_statistics(dataset.tags()), bands
 
 
 def _add_metadata(parent: ET.Element, tags: dict[str, str]) -> None:
@@ -500,69 +556,153 @@ def _write_vrt(
 
 # Overview methods the caller may choose: nearest or mode for class data, average for continuous data.
 OVERVIEW_METHODS = ("nearest", "mode", "average")
+# Codecs that change pixel values. LERC is lossless only with a zero error allowance,
+# which the merge does not take, so every LERC variant is refused.
+LOSSY_CODECS = frozenset({"JPEG", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD"})
 
 
-def _cog_config() -> CogConfig:
-    """Return the COG settings from the config file, or the defaults when there is no file.
+def _cog_options(compress: str, blocksize: int) -> tuple[str, int]:
+    """Check the codec and block size for a merge and return them as GDAL takes them.
 
-    The merge is called as a plain function from any folder, where the
-    service's `config.yaml` is usually absent, so a missing file is not an error.
+    Args:
+        compress: a lossless codec the COG driver knows: "DEFLATE", "LZW",
+            "ZSTD", "LZMA" or "NONE", in any case.
+        blocksize: a whole-number integer type (`int` or a numpy integer such
+            as `np.int64`; not a bool, float or string) that is a power of two
+            from 16 to 4096.
 
     Returns:
-        The `cog` section of the config file named in settings if that file
-        exists, otherwise `CogConfig()` with its defaults.
+        The codec in upper case and the block size as a plain int.
 
     Raises:
-        pydantic.ValidationError: if the config file exists but has unknown keys or invalid values.
-        yaml.YAMLError: if the config file exists but is not valid YAML.
+        ValueError: if `compress` is not a string, is a lossy codec ("JPEG",
+            "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", in any case) or is not
+            a codec the COG driver knows, or `blocksize` is not an integer that
+            is a power of two from 16 to 4096.
     """
-    if not get_settings().config_path.is_file():
-        return CogConfig()
-    return get_config().cog
+    if not isinstance(compress, str):
+        raise ValueError(f"compress must be a codec name, got {compress!r}")
+    codec = compress.upper()
+    if codec in LOSSY_CODECS:
+        raise ValueError(f"compress {compress!r} is lossy; use one of DEFLATE, LZW, ZSTD, LZMA or NONE")
+    if codec not in COG_COMPRESS:
+        raise ValueError(f"compress must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compress!r}")
+    if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
+        raise ValueError(f"BLOCKSIZE must be an integer, a power of two from 16 to 4096, got {blocksize!r}")
+    blocksize = int(blocksize)
+    check_cog_values({"COMPRESS": codec, "BLOCKSIZE": blocksize})
+    return codec, blocksize
+
+
+def _copy_without_pam(vrt: Path, partial: Path, options: dict) -> None:
+    """Write the COG from the VRT with GDAL's `.aux.xml` files (PAM) turned off.
+
+    With PAM on, `STATISTICS=YES` would save a `<tile>.aux.xml` next to each
+    tile. The VRT already holds every tile setting read with PAM on (nodata,
+    metadata). Call this only from a thread that is not the main thread:
+    rasterio applies the setting to the whole process on the main thread, and
+    only to the current thread elsewhere, so other threads keep reading
+    `.aux.xml` files during the copy.
+
+    Args:
+        vrt: the VRT written by `_write_vrt`.
+        partial: where to write the COG.
+        options: COG driver creation options, as GDAL takes them.
+
+    Returns:
+        None.
+
+    Raises:
+        rasterio.errors.RasterioError: if GDAL cannot read a tile or write the output.
+    """
+    with rasterio.Env(GDAL_PAM_ENABLED="NO"):
+        rasterio.shutil.copy(str(vrt), str(partial), driver="COG", **options)
+
+
+def _hole_pixels(grid: TileGrid, placed: Sequence[tuple[_Header, int, int]]) -> int:
+    """Return how many pixels of the union grid no tile covers.
+
+    Args:
+        grid: the union grid from `place_tiles`.
+        placed: each tile's header with its place on the grid; the tiles must
+            not overlap (see `check_no_overlap`).
+
+    Returns:
+        The number of uncovered pixels in one band (0 when the tiles fill the grid).
+
+    Raises:
+        Nothing.
+    """
+    return grid.width * grid.height - sum(h.width * h.height for h, _, _ in placed)
 
 
 def merge_to_cog(
-    tiles: Sequence[str | PathLike], output: str | PathLike, overview_resampling: str
+    tiles: Sequence[str | PathLike],
+    output: str | PathLike,
+    overview_resampling: str,
+    *,
+    compress: str = "DEFLATE",
+    blocksize: int = 512,
 ) -> Path:
     """Merge tiles that share one grid into one COG and return the output path.
 
     The output keeps the tiles' CRS, pixel grid, data type, band count and
     nodata (none if the tiles have none), and covers the union of the tiles.
-    Gaps between tiles are filled with nodata (0 when there is none). Pixels are
-    copied without resampling. The COG is tiled and compressed (codec and block
-    size from the config file, or the `CogConfig` defaults when there is no
-    config file), and its overviews are built fresh with `overview_resampling`;
-    overviews already inside the tiles are not reused. Colour interpretation,
-    colour table, band descriptions, scale, offset and metadata (default domain)
-    are copied from the first tile; the other tiles' values for these are not
-    compared. It is written to a temporary folder next to `output` and moved into place
-    only when complete, so a failure leaves no output and no temporary files.
+    Places no tile covers are filled with nodata; when the tiles have no nodata
+    they are filled with 0 and, unless the first tile has an alpha band (which
+    is also 0 there, so those places are transparent), a warning is logged
+    with the number of such pixels, since they cannot be told apart from real
+    0 values. Pixels are
+    copied without resampling. The COG is tiled with `blocksize` and compressed
+    with `compress`, and its overviews are built fresh with
+    `overview_resampling`; overviews already inside the tiles are not reused.
+    Band statistics (`STATISTICS_*` tags) are computed by GDAL from the tiles'
+    pixels; those stored in the tiles are not copied. Places no tile covers
+    count as not valid when the tiles have a nodata, and are left out when
+    they do not (0 fill is not in the minimum, mean or valid percent). GDAL
+    does not save statistics or other `.aux.xml` files next to the tiles, so
+    the tiles' folder is left as it was. The COG is written in a separate
+    thread with `.aux.xml` reading turned off for that thread only, so other
+    threads still read `.aux.xml` files while the merge runs. GDAL uses all CPUs
+    (`NUM_THREADS=ALL_CPUS`). Colour interpretation, colour table,
+    band descriptions, scale, offset and other metadata (default domain) are
+    copied from the first tile; the other tiles' values for these are not
+    compared. No config file and no `.env` is read. One info line logs the
+    settings used. It is written to a temporary folder next to `output` and
+    moved into place only when complete, so a failure leaves no output and no
+    temporary files.
 
     Args:
         tiles: a list or tuple of one or more local paths or URLs GDAL can open.
         output: where to write the COG. Its folder is created if missing.
         overview_resampling: "nearest" or "mode" for class data, "average" for
             continuous data. Lower case, nothing else is accepted.
+        compress: a lossless codec: "DEFLATE" (default), "LZW", "ZSTD",
+            "LZMA" or "NONE", in any case.
+        blocksize: the COG's block size in pixels, an integer (`int` or a
+            numpy integer) that is a power of two from 16 to 4096 (default 512).
 
     Returns:
         The output path, as given, as a Path.
 
     Raises:
         ValueError: if `overview_resampling` is not one of the allowed values,
+            `compress` is lossy or unknown, `blocksize` is not allowed,
             `tiles` is empty or a single path instead of a list, or a tile is a
-            URL whose scheme is not supported (see `_gdal_path`).
+            URL whose scheme is not supported (see `_gdal_path`). Nothing is
+            written.
         FileExistsError: if `output` already exists. It is left untouched.
         TileMismatchError: naming the tile and the field when tiles differ (see
-            `check_tiles`) or two tiles overlap (field "overlap").
+            `check_tiles`), a tile has a mask (field "mask") or two tiles
+            overlap (field "overlap").
         rasterio.errors.RasterioError: if GDAL cannot read a tile or write the output.
         OSError: if the output folder or temporary files cannot be written.
-        pydantic.ValidationError: if a config file exists but has invalid values.
-        yaml.YAMLError: if a config file exists but is not valid YAML.
     """
     if overview_resampling not in OVERVIEW_METHODS:
         raise ValueError(
             f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
         )
+    codec, blocksize = _cog_options(compress, blocksize)
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -570,21 +710,34 @@ def merge_to_cog(
     check_no_overlap(placed)
     tags, looks = _read_look(tiles[0])
 
-    config = _cog_config()
     options = {
-        "COMPRESS": config.compress,
-        "BLOCKSIZE": config.blocksize,
-        "NUM_THREADS": config.num_threads,
+        "COMPRESS": codec,
+        "BLOCKSIZE": blocksize,
+        "NUM_THREADS": "ALL_CPUS",
         "OVERVIEW_RESAMPLING": overview_resampling.upper(),
         "OVERVIEWS": "IGNORE_EXISTING",  # the tiles' own overviews may use another method
         "BIGTIFF": "IF_SAFER",  # a merged year can pass 4 GB uncompressed
+        "STATISTICS": "YES",
     }
+    logger.info(
+        "merging %d tiles into %s: compress=%s blocksize=%d overview_resampling=%s num_threads=%s",
+        len(placed), output, codec, blocksize, overview_resampling, options["NUM_THREADS"],
+    )
+    holes = _hole_pixels(grid, placed)
+    has_alpha = any(look.color_interp == "Alpha" for look in looks)
+    if grid.nodata is None and holes and not has_alpha:
+        logger.warning(
+            "%s pixels per band are not covered by any tile and the tiles have no nodata: "
+            "they are filled with 0 and cannot be told apart from real 0 values",
+            f"{holes:,}",
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=f".{output.name}.") as tmp:
         vrt = Path(tmp) / "tiles.vrt"
         partial = Path(tmp) / output.name
         _write_vrt(grid, placed, vrt, tags, looks)
-        rasterio.shutil.copy(str(vrt), str(partial), driver="COG", **options)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(_copy_without_pam, vrt, partial, options).result()
         if output.exists():
             raise FileExistsError(f"output already exists: {output}")
         os.replace(partial, output)

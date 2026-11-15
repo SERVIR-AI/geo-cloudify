@@ -261,13 +261,26 @@ def validate_cog_kwargs(cog_kwargs: dict) -> None:
 
 
 def check_cog_values(settings: dict) -> None:
-    """Check COG option values before GDAL sees them. Keys must be uppercase. Returns None.
+    """Check COG option values before GDAL sees them.
 
     GDAL does not reject every bad value: it reads a BLOCKSIZE of "big" as 0 and
     can then try to allocate huge buffers, and it silently replaces an unknown
-    COMPRESS. Used on arrival (`validate_cog_kwargs`) and by `cog.convert.to_cog`.
+    COMPRESS. Used on arrival (`validate_cog_kwargs`), by `cog.convert.to_cog`
+    and by `cog.merge.merge_to_cog`. When `settings` has no COMPRESS, the configured
+    codec is read from the config file to check LEVEL against; with COMPRESS
+    given, no config file is read.
+
+    Args:
+        settings: COG driver options with uppercase keys, for example
+            {"COMPRESS": "DEFLATE", "BLOCKSIZE": 512}. Only the keys checked
+            below are looked at; others are ignored.
+
+    Returns:
+        None.
 
     Raises:
+        pydantic.ValidationError, yaml.YAMLError, FileNotFoundError: as
+            `config.get_config`, only when the config file is read (see above).
         ValueError: if a value is out of range or not a number where one is needed.
     """
     if "BLOCKSIZE" in settings:
@@ -277,7 +290,7 @@ def check_cog_values(settings: dict) -> None:
     if "NODATA" in settings and _as_float(settings["NODATA"]) is None:
         raise ValueError(f"NODATA must be a number, got {settings['NODATA']!r}")
     # Without COMPRESS, conversion uses the configured codec, so LEVEL is checked against it.
-    compress = str(settings.get("COMPRESS", get_config().cog.compress)).upper()
+    compress = str(settings["COMPRESS"] if "COMPRESS" in settings else get_config().cog.compress).upper()
     if "COMPRESS" in settings and compress not in COG_COMPRESS:
         raise ValueError(f"COMPRESS must be one of {', '.join(sorted(COG_COMPRESS))}, got {settings['COMPRESS']!r}")
     if "OVERVIEW_COUNT" in settings:

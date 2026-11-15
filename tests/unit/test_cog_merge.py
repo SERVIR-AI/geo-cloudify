@@ -1,6 +1,7 @@
 """Unit tests for checking that tiles share one grid (check_tiles) and merging them (merge_to_cog)."""
 
 import math
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -517,3 +518,334 @@ def test_real_gmw_tiles_merge(tmp_path):
         assert (out.transform.c, out.transform.f) == (104.0, 10.0)
         assert out.dtypes == first.dtypes and out.nodata == first.nodata
         assert out.overviews(1)
+
+
+# --- settings: no config file, lossless codecs only -------------------------------------
+
+def _no_config_reads(monkeypatch):
+    """Make any attempt to read config or settings fail the test."""
+    import geo_cloudify.cog.explore as cog_explore
+    import geo_cloudify.config as config_module
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("merge read the config or settings")
+
+    monkeypatch.setattr(cog_explore, "get_config", refuse)
+    monkeypatch.setattr(config_module, "get_config", refuse)
+    monkeypatch.setattr(config_module, "get_settings", refuse)
+
+
+def test_merge_ignores_a_hostile_config_file_and_env(tmp_path, monkeypatch):
+    folder = tmp_path / "catalog"
+    folder.mkdir()
+    (folder / "config.yaml").write_text("cog:\n  compress: JPEG\n  blocksize: 99\n  unknown: 1\n")
+    (folder / "broken.yaml").write_text("cog: [not: valid: yaml\n")
+    (folder / ".env").write_text("GEO_CLOUDIFY_CONFIG=broken.yaml\n")
+    monkeypatch.chdir(folder)
+    monkeypatch.delenv("GEO_CLOUDIFY_CONFIG", raising=False)
+    get_settings.cache_clear()
+    get_config.cache_clear()
+    try:
+        _no_config_reads(monkeypatch)
+        tiles = _random_tiles(tmp_path)
+        output = merge_to_cog(tiles, folder / "merged.tif", "mode")
+    finally:
+        get_settings.cache_clear()
+        get_config.cache_clear()
+    _assert_tiles_placed(output, tiles)
+    with rasterio.open(output) as out:
+        assert out.compression.name == "deflate"
+        assert out.block_shapes[0] == (512, 512)
+
+
+def test_defaults_are_used_and_logged(tmp_path, caplog):
+    tiles = _random_tiles(tmp_path)
+    with caplog.at_level("INFO", logger="geo_cloudify.cog.merge"):
+        merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
+    lines = [r.getMessage() for r in caplog.records
+             if r.name == "geo_cloudify.cog.merge" and r.levelname == "INFO"]
+    assert len(lines) == 1
+    assert "DEFLATE" in lines[0] and "512" in lines[0] and "mode" in lines[0]
+
+
+@pytest.mark.parametrize(("compress", "blocksize", "codec"), [
+    ("ZSTD", 256, "zstd"), ("lzw", 1024, "lzw"), ("Deflate", 128, "deflate"),
+])
+def test_given_compress_and_blocksize_reach_the_output(tmp_path, caplog, compress, blocksize, codec):
+    tiles = _random_tiles(tmp_path)
+    with caplog.at_level("INFO", logger="geo_cloudify.cog.merge"):
+        output = merge_to_cog(tiles, tmp_path / "merged.tif", "nearest",
+                              compress=compress, blocksize=blocksize)
+    _assert_tiles_placed(output, tiles)
+    with rasterio.open(output) as out:
+        assert out.compression.name == codec
+        assert out.block_shapes[0] == (blocksize, blocksize)
+    assert any(compress.upper() in r.getMessage() and str(blocksize) in r.getMessage()
+               for r in caplog.records if r.name == "geo_cloudify.cog.merge")
+
+
+@pytest.mark.parametrize("compress", [
+    "JPEG", "jpeg", "WEBP", "Webp", "LERC", "lerc", "LERC_DEFLATE", "lerc_deflate", "LERC_ZSTD", "Lerc_Zstd",
+])
+def test_lossy_codecs_are_refused_before_writing(tmp_path, compress):
+    tiles = _random_tiles(tmp_path)
+    out_dir = tmp_path / "out"
+    with pytest.raises(ValueError, match="(?i)lossy"):
+        merge_to_cog(tiles, out_dir / "merged.tif", "mode", compress=compress)
+    assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("compress", ["FOO", "", None, 5, "DEFLATE "])
+def test_unknown_codec_is_refused_before_writing(tmp_path, compress):
+    tiles = _random_tiles(tmp_path)
+    out_dir = tmp_path / "out"
+    with pytest.raises(ValueError, match="(?i)compress"):
+        merge_to_cog(tiles, out_dir / "merged.tif", "mode", compress=compress)
+    assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("blocksize", [0, 8, 100, 8192, "big", True, None, 512.5, 512.0, "512"])
+def test_bad_block_size_is_refused_before_writing(tmp_path, blocksize):
+    tiles = _random_tiles(tmp_path)
+    out_dir = tmp_path / "out"
+    with pytest.raises(ValueError, match="BLOCKSIZE"):
+        merge_to_cog(tiles, out_dir / "merged.tif", "mode", blocksize=blocksize)
+    assert not out_dir.exists()
+
+
+@pytest.mark.parametrize("blocksize", [np.int64(512), np.int32(256), np.uint16(512), np.int8(64)])
+def test_numpy_integer_block_size_is_accepted(tmp_path, blocksize):
+    tiles = _random_tiles(tmp_path)
+    output = merge_to_cog(tiles, tmp_path / "merged.tif", "mode", blocksize=blocksize)
+    with rasterio.open(output) as out:
+        assert out.block_shapes[0] == (int(blocksize), int(blocksize))
+
+
+@pytest.mark.parametrize("blocksize", [np.int64(100), np.int64(8192), np.float64(512.0), np.bool_(True)])
+def test_bad_numpy_block_size_is_refused_before_writing(tmp_path, blocksize):
+    tiles = _random_tiles(tmp_path)
+    out_dir = tmp_path / "out"
+    with pytest.raises(ValueError, match="BLOCKSIZE"):
+        merge_to_cog(tiles, out_dir / "merged.tif", "mode", blocksize=blocksize)
+    assert not out_dir.exists()
+
+
+# --- statistics are computed for the merged image -----------------------------------------
+
+def test_statistics_are_computed_for_the_merged_image_not_copied(tmp_path):
+    low = np.zeros((1, 300, 300), dtype="uint8")
+    low[:, :, 1:] = np.random.default_rng(3).integers(1, 4, size=(1, 300, 299), dtype="uint8")
+    high = low.copy()
+    high[0, 151, 213] = 20  # one pixel, so statistics from an overview would miss it
+    a = _tile_with(tmp_path / "a.tif", low)
+    b = _tile_with(tmp_path / "b.tif", high, x=X0 + 300 * PIXEL)
+    with rasterio.open(a, "r+") as dst:
+        dst.update_tags(1, STATISTICS_MINIMUM="0", STATISTICS_MAXIMUM="3", STATISTICS_MEAN="1.5",
+                        STATISTICS_STDDEV="1", STATISTICS_VALID_PERCENT="100", CLASSES="1-22")
+        dst.update_tags(STATISTICS_MAXIMUM="3", SOURCE="test")
+    out_dir = tmp_path / "out"
+    output = merge_to_cog([a, b], out_dir / "merged.tif", "mode")
+    with rasterio.open(output) as out:
+        band_tags = out.tags(1)
+        assert float(band_tags["STATISTICS_MAXIMUM"]) == 20
+        assert float(band_tags["STATISTICS_MINIMUM"]) == 1  # nodata 0 is left out
+        assert float(band_tags["STATISTICS_VALID_PERCENT"]) < 100
+        assert band_tags["CLASSES"] == "1-22"
+        assert "STATISTICS_MAXIMUM" not in out.tags()
+        assert out.tags()["SOURCE"] == "test"
+    assert [p.name for p in out_dir.iterdir()] == ["merged.tif"]
+
+
+def test_statistics_leave_out_a_hole_filled_with_zero(tmp_path):
+    nines = np.full((1, 10, 10), 9, dtype="uint8")
+    a = _tile_with(tmp_path / "a.tif", nines, nodata=None)
+    b = _tile_with(tmp_path / "b.tif", nines, x=X0 + 20 * PIXEL, nodata=None)
+    output = merge_to_cog([a, b], tmp_path / "out" / "merged.tif", "nearest")
+    with rasterio.open(output) as out:
+        assert (out.read(1, window=Window(10, 0, 10, 10)) == 0).all()
+        assert float(out.tags(1)["STATISTICS_MINIMUM"]) == 9
+
+
+def _aux_xml(tile, nodata):
+    """Write a `<tile>.aux.xml` next to `tile` holding statistics and a nodata value."""
+    Path(f"{tile}.aux.xml").write_text(
+        "<PAMDataset>\n  <PAMRasterBand band=\"1\">\n"
+        f"    <NoDataValue>{nodata}</NoDataValue>\n"
+        "    <Metadata>\n"
+        "      <MDI key=\"STATISTICS_MAXIMUM\">3</MDI>\n"
+        "      <MDI key=\"STATISTICS_MINIMUM\">1</MDI>\n"
+        "    </Metadata>\n  </PAMRasterBand>\n</PAMDataset>\n"
+    )
+
+
+def _folder_bytes(folder):
+    return {p.name: p.read_bytes() for p in folder.iterdir()}
+
+
+def test_merge_leaves_the_tile_folder_unchanged(tmp_path):
+    folder = tmp_path / "tiles"
+    folder.mkdir()
+    tiles = _random_tiles(folder)
+    _aux_xml(tiles[1], 0)
+    before = _folder_bytes(folder)
+    merge_to_cog(tiles, tmp_path / "out" / "merged.tif", "mode")
+    assert _folder_bytes(folder) == before
+
+
+def test_other_threads_still_read_aux_xml_during_the_copy(tmp_path, monkeypatch):
+    folder = tmp_path / "tiles"
+    folder.mkdir()
+    tiles = _random_tiles(folder)
+    other = _tile(tmp_path / "other.tif", nodata=None)
+    _aux_xml(other, 0)
+    real_copy = rasterio.shutil.copy
+    seen = {}
+
+    def read_other():
+        with rasterio.open(other) as src:
+            seen["nodata"] = src.nodata
+
+    def copy_and_read_from_another_thread(*args, **kwargs):
+        seen["copy_on_main_thread"] = threading.current_thread() is threading.main_thread()
+        reader = threading.Thread(target=read_other)
+        reader.start()
+        reader.join()
+        with rasterio.open(other) as src:
+            seen["copy_thread_nodata"] = src.nodata
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(rasterio.shutil, "copy", copy_and_read_from_another_thread)
+    assert threading.current_thread() is threading.main_thread()
+    merge_to_cog(tiles, tmp_path / "out" / "merged.tif", "mode")
+    assert seen == {"copy_on_main_thread": False, "nodata": 0, "copy_thread_nodata": None}
+    with rasterio.open(other) as src:
+        assert src.nodata == 0
+
+
+def test_nodata_stored_only_in_an_aux_xml_still_reaches_the_output(tmp_path):
+    folder = tmp_path / "tiles"
+    folder.mkdir()
+    tiles = _random_tiles(folder, nodata=None, gap=5)
+    for tile in tiles:
+        _aux_xml(tile, 0)
+    before = _folder_bytes(folder)
+    output = merge_to_cog(tiles, tmp_path / "out" / "merged.tif", "mode")
+    with rasterio.open(output) as out:
+        assert out.nodata == 0
+        assert float(out.tags(1)["STATISTICS_VALID_PERCENT"]) < 100
+    assert _folder_bytes(folder) == before
+
+
+# --- holes with no nodata ----------------------------------------------------------------
+
+def _hole_warnings(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.name == "geo_cloudify.cog.merge" and r.levelname == "WARNING"]
+
+
+def test_hole_without_nodata_is_filled_with_zero_and_warned(tmp_path, caplog):
+    tiles = _random_tiles(tmp_path, nodata=None, gap=5)
+    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
+        output = merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
+    with rasterio.open(output) as out:
+        assert out.nodata is None
+        assert (out.read(1, window=Window(600, 0, 5, out.height)) == 0).all()
+    warnings = _hole_warnings(caplog)
+    assert len(warnings) == 1
+    assert "3,935" in warnings[0] and " 0" in warnings[0]
+
+
+def test_hole_count_for_a_missing_corner_tile(tmp_path, caplog):
+    tiles = _random_tiles(tmp_path, nodata=None)[:3]  # se (257 x 311) left out
+    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
+        merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
+    warnings = _hole_warnings(caplog)
+    assert len(warnings) == 1 and "79,927" in warnings[0]
+
+
+@pytest.mark.parametrize(("nodata", "gap"), [(0, 5), (None, 0)])
+def test_no_hole_warning_with_nodata_or_without_a_hole(tmp_path, caplog, nodata, gap):
+    tiles = _random_tiles(tmp_path, nodata=nodata, gap=gap)
+    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
+        merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
+    assert _hole_warnings(caplog) == []
+
+
+# --- tiles with an internal mask ----------------------------------------------------------
+
+def _masked_tile(path, *, x=X0):
+    """Write a tile with an internal per-dataset mask and no nodata, and return its path."""
+    data = np.full((1, 20, 20), 7, dtype="uint8")
+    mask = np.full((20, 20), 255, dtype="uint8")
+    mask[:5, :5] = 0
+    with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
+        with rasterio.open(
+            path, "w", driver="GTiff", width=20, height=20, count=1, dtype="uint8",
+            crs="EPSG:32648", transform=from_origin(x, Y0, PIXEL, PIXEL),
+        ) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+    return path
+
+
+def _alpha_tile(path, *, x=X0):
+    """Write an RGBA tile whose fourth band is alpha, and return its path."""
+    data = np.full((4, 20, 20), 9, dtype="uint8")
+    data[3] = 255
+    with rasterio.open(
+        path, "w", driver="GTiff", width=20, height=20, count=4, dtype="uint8",
+        crs="EPSG:32648", transform=from_origin(x, Y0, PIXEL, PIXEL), photometric="RGB", alpha="YES",
+    ) as dst:
+        dst.write(data)
+    return path
+
+
+@pytest.mark.parametrize("masked_first", [True, False])
+def test_tile_with_internal_mask_is_refused(tmp_path, masked_first):
+    masked = _masked_tile(tmp_path / "masked.tif")
+    plain = _tile(tmp_path / "plain.tif", x=X0 + 20 * PIXEL, width=20, height=20, nodata=None)
+    tiles = [masked, plain] if masked_first else [plain, masked]
+    with pytest.raises(TileMismatchError) as caught:
+        merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
+    assert caught.value.tile == str(masked)
+    assert caught.value.field == "mask"
+    assert "masked.tif" in str(caught.value)
+    assert not (tmp_path / "merged.tif").exists()
+
+
+def test_mask_is_found_without_reading_pixels(tmp_path, monkeypatch):
+    masked = _masked_tile(tmp_path / "masked.tif")
+
+    def no_read(self, *args, **kwargs):
+        raise AssertionError("pixels were read")
+
+    monkeypatch.setattr(DatasetReader, "read", no_read)
+    monkeypatch.setattr(DatasetReader, "read_masks", no_read)
+    monkeypatch.setattr(DatasetReader, "dataset_mask", no_read)
+    with pytest.raises(TileMismatchError) as caught:
+        check_tiles([masked])
+    assert caught.value.field == "mask"
+
+
+@pytest.mark.parametrize("nodata", [0, None])
+def test_tiles_with_nodata_or_with_neither_are_not_refused_for_a_mask(tmp_path, nodata):
+    tiles = _random_tiles(tmp_path, nodata=nodata)
+    output = merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
+    _assert_tiles_placed(output, tiles)
+
+
+def test_tiles_with_an_alpha_band_are_not_refused_for_a_mask(tmp_path):
+    a = _alpha_tile(tmp_path / "a.tif")
+    b = _alpha_tile(tmp_path / "b.tif", x=X0 + 20 * PIXEL)
+    output = merge_to_cog([a, b], tmp_path / "merged.tif", "nearest")
+    _assert_tiles_placed(output, [a, b])
+
+
+def test_hole_in_alpha_tiles_is_transparent_and_not_warned(tmp_path, caplog):
+    a = _alpha_tile(tmp_path / "a.tif")
+    b = _alpha_tile(tmp_path / "b.tif", x=X0 + 25 * PIXEL)
+    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
+        output = merge_to_cog([a, b], tmp_path / "merged.tif", "nearest")
+    with rasterio.open(output) as out:
+        assert (out.read(4, window=Window(20, 0, 5, 20)) == 0).all()
+    assert _hole_warnings(caplog) == []
