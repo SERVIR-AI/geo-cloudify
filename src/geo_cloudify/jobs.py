@@ -82,14 +82,22 @@ class JobStore:
         self._lock = threading.Lock()
 
     def create(self, sources: list[str], cog_kwargs_by_source: dict[str, dict[str, Any] | None] | None = None) -> Job:
-        """Register a new job for the given sources and per-source COG options and return it."""
+        """Register a new job for the given sources and per-source COG options and return it.
+
+    Returns:
+        The new job, stored under a fresh ID.
+    """
         job = Job(id=uuid.uuid4().hex, sources=sources, cog_kwargs_by_source=cog_kwargs_by_source or {})
         with self._lock:
             self._jobs[job.id] = job
         return job
 
     def get(self, job_id: str) -> Job | None:
-        """Return the job with the given ID, or None if it does not exist."""
+        """Return the job with the given ID, or None if it does not exist.
+
+    Returns:
+        The job, or None.
+    """
         with self._lock:
             return self._jobs.get(job_id)
 
@@ -124,6 +132,7 @@ def run_job(job: Job) -> None:
             return
         job.results.append(SourceOutcome(source=source, status=SourceStatus.OK, files=[str(p) for p in paths]))
 
+    # Only sources that downloaded take part in the plan.
     files_by_source = {
         result.source: [Path(f) for f in result.files] for result in job.results if result.status is SourceStatus.OK
     }
@@ -143,6 +152,7 @@ def run_job(job: Job) -> None:
         try:
             output = convert.to_cog(item, job_dir, job_dir / "output")
         except (*explore.FILE_ERRORS, ValueError, FileExistsError) as exc:
+            # A problem with this file only: record it and convert the next item.
             logger.warning("conversion of %s failed: %s", item.files[0], exc)
             job.conversions.append(ItemOutcome(file=item.files[0], status=SourceStatus.FAILED, error=str(exc)))
             continue

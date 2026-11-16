@@ -80,12 +80,16 @@ def build_plan(
     for source in sorted(files_by_source):
         cog_kwargs = (cog_kwargs_by_source or {}).get(source)
         items.extend(_plan_source(source, files_by_source[source], cog_kwargs))
+    # Same input, same order.
     items.sort(key=lambda item: (item.source, item.files[0]))
     return JobPlan(items=items)
 
 
 def _plan_source(source: str, files: list[Path], cog_kwargs: dict | None) -> list[PlanItem]:
     """Return the plan items for one source's files.
+
+    Returns:
+        The plan items for this source: converted, passed through and skipped files.
 
     Raises:
         ValueError: if cog_kwargs has an unknown option name.
@@ -180,6 +184,10 @@ def _plain_reason(path: Path, message: str) -> str:
     GDAL says the same thing for a vector, a text file and a damaged raster, so that
     case gets one plain reason. Any other error keeps GDAL's message, so it can be
     acted on.
+
+    Returns:
+        UNSUPPORTED_REASON for GDAL's generic message, otherwise "could not read: "
+        and the message without the path.
     """
     detail = _without_path(path, message)
     if GDAL_NOT_RECOGNIZED in detail.lower():
@@ -188,9 +196,15 @@ def _plain_reason(path: Path, message: str) -> str:
 
 
 def _without_path(path: Path, message: str) -> str:
-    """Return GDAL's message with this file's path removed, including quotes."""
+    """Return GDAL's message with this file's path removed, including quotes.
+
+    Returns:
+        The cleaned message, possibly empty.
+    """
+    # GDAL may write the path as given or fully resolved; remove both.
     for candidate in (str(path), str(path.resolve())):
         message = message.replace(candidate, "")
+    # Then trim the quotes, colons and spaces the removed path leaves behind.
     return message.strip().strip("'\"`").strip(" :").strip()
 
 
@@ -200,11 +214,17 @@ def _companions(dataset: DatasetReader, path: Path, by_resolved: dict[Path, Path
     GDAL's own list (`dataset.files`) covers the files it opened, for example
     `.ovr`, `.msk` and `.aux.xml`. World files are added by name, because GDAL
     does not list them when the raster carries its own georeferencing.
+
+    Returns:
+        The companion paths, as the caller gave them, sorted.
     """
+    # Files GDAL opened with the raster (overviews, masks, aux files).
     listed = [Path(name) for name in dataset.files]
+    # Add the world files that could sit next to the raster.
     candidates = listed + [path.with_suffix(suffix) for suffix in WORLD_FILE_SUFFIXES]
     resolved_main = path.resolve()
 
+    # Keep only files of this source, and never the raster itself.
     found = set()
     for candidate in candidates:
         resolved = candidate.resolve()
@@ -214,7 +234,11 @@ def _companions(dataset: DatasetReader, path: Path, by_resolved: dict[Path, Path
 
 
 def _skip_item(source: str, path: Path, reason: str) -> PlanItem:
-    """Return a skip entry for one file that will not be converted."""
+    """Return a skip entry for one file that will not be converted.
+
+    Returns:
+        A SKIP plan item holding the file and the reason.
+    """
     return PlanItem(
         source=source,
         kind=Kind.OTHER,

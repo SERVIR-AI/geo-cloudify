@@ -27,6 +27,9 @@ def output_path(main: Path, job_dir: Path, out_dir: Path) -> Path:
     A `.tif` or `.tiff` name is kept; any other name gets `.tif` added
     (`a.nc` becomes `a.nc.tif`), so `a.tif` and `a.nc` never share an output.
 
+    Returns:
+        The output path.
+
     Raises:
         ValueError: if `main` is not inside `job_dir`.
     """
@@ -38,6 +41,9 @@ def output_path(main: Path, job_dir: Path, out_dir: Path) -> Path:
 
 def to_cog(item: PlanItem, job_dir: Path, out_dir: Path) -> Path:
     """Convert one CONVERT plan entry to a COG and return the output path.
+
+    Returns:
+        The path of the COG that was written.
 
     Raises:
         ValueError: if the item is not a CONVERT item, its file is not inside `job_dir`,
@@ -55,16 +61,20 @@ def to_cog(item: PlanItem, job_dir: Path, out_dir: Path) -> Path:
         raise FileExistsError(f"output already exists: {output.name}")
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    # GDAL gets the COG options only; NODATA and CRS are applied to the VRT below.
     options = {key: value for key, value in item.settings.items() if key not in _INSTRUCTIONS}
     with tempfile.TemporaryDirectory() as tmp:
         vrt = Path(tmp) / "source.vrt"
+        # A VRT is a text file that points at the source pixels; no pixels are copied.
         rasterio.shutil.copy(str(main), str(vrt), driver="VRT")
+        # Write nodata and CRS into the VRT, never into the source file.
         with rasterio.open(vrt, "r+") as dataset:
             if "NODATA" in item.settings:
                 dataset.nodata = float(item.settings["NODATA"])
             if "CRS" in item.settings:
                 dataset.crs = CRS.from_user_input(item.settings["CRS"])
         try:
+            # The COG driver writes the output from the VRT and builds the overviews.
             rasterio.shutil.copy(str(vrt), str(output), driver="COG", **options)
         except Exception:
             output.unlink(missing_ok=True)  # never leave a half-written COG behind

@@ -74,6 +74,6 @@ def to_json_safe_dict(plan: JobPlan) -> dict[str, Any]:
     """Return the plan as a JSON-safe dict, with NaN and infinity as strings.
 
     FastAPI's JSON encoder rejects raw float NaN, so routes use this instead of
-    `model_dump(mode="json")`. Returns a plain dict; never raises.
+    `model_dump(mode="json")`. Returns a plain dict.
     """
     return json.loads(plan.model_dump_json())

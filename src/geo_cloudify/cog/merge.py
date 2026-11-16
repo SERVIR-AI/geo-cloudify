@@ -67,12 +67,6 @@ class TileMismatchError(ValueError):
             tile: the tile as the caller gave it (path or URL).
             field: the field that differs (see the class docstring for values).
             detail: a short plain explanation, added to the message.
-
-        Returns:
-            None.
-
-        Raises:
-            Nothing.
         """
         super().__init__(f"tile {tile}: {field} differs: {detail}")
         self.tile = tile
@@ -138,9 +132,6 @@ def same_nodata(a: float | None, b: float | None) -> bool:
 
     Returns:
         True if both are None, both are NaN, or both are the same number.
-
-    Raises:
-        Nothing.
     """
     if a is None or b is None:
         return a is None and b is None
@@ -162,9 +153,6 @@ def _has_mask(flags: Sequence[MaskFlags]) -> bool:
 
     Returns:
         True for a mask that is not all-valid, nodata or alpha.
-
-    Raises:
-        Nothing.
     """
     return not ({MaskFlags.all_valid, MaskFlags.nodata, MaskFlags.alpha} & set(flags))
 
@@ -205,9 +193,6 @@ def _check_own_header(header: _Header) -> None:
     Args:
         header: the tile's header.
 
-    Returns:
-        None.
-
     Raises:
         TileMismatchError: naming the tile and the field ("crs", "orientation",
             "data type", "nodata" or "mask").
@@ -215,6 +200,8 @@ def _check_own_header(header: _Header) -> None:
     if header.crs is None:
         raise TileMismatchError(header.name, "crs", "the tile has no CRS")
     t = header.transform
+    # b and d are the rotation terms; a and e are the pixel width and height.
+    # North-up means no rotation, a positive width and a negative height.
     if t.b != 0 or t.d != 0 or t.a <= 0 or t.e >= 0:
         raise TileMismatchError(
             header.name, "orientation", f"transform {tuple(t)[:6]} is not north-up without rotation"
@@ -245,8 +232,10 @@ def _pixel_offset(header: _Header, ref: _Header) -> tuple[int, int]:
             not a whole number of pixels.
     """
     t, r = header.transform, ref.transform
+    # Distance between the two origins, in pixels.
     col = (t.c - r.c) / r.a
     row = (t.f - r.f) / r.e  # r.e is negative, so a tile further north gets a negative row
+    # Each offset must be a whole number of pixels, within a tiny tolerance.
     for axis, offset in (("x", col), ("y", row)):
         if abs(offset - round(offset)) > ALIGN_TOLERANCE:
             raise TileMismatchError(
@@ -308,6 +297,7 @@ def place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_
     headers = [_read_header(tile) for tile in tiles]
     ref = headers[0]
     offsets = []
+    # Check each tile on its own, then against the first tile.
     for header in headers:
         _check_own_header(header)
         if header.crs != ref.crs:
@@ -332,6 +322,8 @@ def place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_
             )
         offsets.append(_pixel_offset(header, ref))
 
+    # The union box in pixels, on the first tile's grid: left and top are the smallest
+    # offsets, right and bottom are the largest tile edges.
     left = min(col for col, _ in offsets)
     top = min(row for _, row in offsets)
     right = max(col + h.width for (col, _), h in zip(offsets, headers))
@@ -349,6 +341,7 @@ def place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_
         count=len(ref.dtypes),
         nodata=ref.nodatavals[0],
     )
+    # Offsets are given from the union's top-left corner.
     return grid, [(h, col - left, row - top) for (col, row), h in zip(offsets, headers)]
 
 
@@ -359,13 +352,12 @@ def check_no_overlap(placed: Sequence[tuple[_Header, int, int]]) -> None:
         placed: each tile's header with its column and row on the union grid,
             as returned by `place_tiles`.
 
-    Returns:
-        None.
-
     Raises:
         TileMismatchError: naming the later of two overlapping tiles, with field
             "overlap" and the earlier tile in the message.
     """
+    # Compare each tile with the earlier ones. Two boxes overlap when they overlap on
+    # both the column axis and the row axis.
     for i, (h, col, row) in enumerate(placed):
         for other, o_col, o_row in placed[:i]:
             if (col < o_col + other.width and o_col < col + h.width
@@ -388,14 +380,17 @@ def _gdal_path(tile: str) -> str:
     Raises:
         ValueError: if `tile` is a URL with any other scheme.
     """
+    # Already a GDAL virtual path.
     if tile.startswith("/vsi"):
         return tile
+    # Split "scheme://rest"; `sep` is empty when there is no scheme (a plain local path).
     scheme, sep, rest = tile.partition("://")
     if not sep:
         return os.path.abspath(tile)
     scheme = scheme.lower()
     if scheme == "file":
         return os.path.abspath(rest)
+    # "/vsicurl/" takes the whole URL; the other prefixes take the part after "://".
     if scheme in _VSI_PREFIXES:
         return _VSI_PREFIXES[scheme] + (tile if _VSI_PREFIXES[scheme] == "/vsicurl/" else rest)
     raise ValueError(
@@ -435,9 +430,6 @@ def _without_statistics(tags: dict[str, str]) -> dict[str, str]:
 
     Returns:
         A new dict holding every other tag.
-
-    Raises:
-        Nothing.
     """
     return {key: value for key, value in tags.items() if not key.upper().startswith("STATISTICS_")}
 
@@ -480,12 +472,6 @@ def _add_metadata(parent: ET.Element, tags: dict[str, str]) -> None:
     Args:
         parent: the `VRTDataset` or `VRTRasterBand` element.
         tags: metadata keys and values in the default domain.
-
-    Returns:
-        None.
-
-    Raises:
-        Nothing.
     """
     if not tags:
         return
@@ -516,17 +502,16 @@ def _write_vrt(
         looks: one `_BandLook` per band: colour interpretation, colour table,
             description, scale, offset and band metadata to put on that band.
 
-    Returns:
-        None.
-
     Raises:
         OSError: if the file cannot be written.
     """
+    # Dataset level: size, CRS, transform and metadata of the union grid.
     root = ET.Element("VRTDataset", rasterXSize=str(grid.width), rasterYSize=str(grid.height))
     ET.SubElement(root, "SRS").text = grid.crs.to_wkt()
     ET.SubElement(root, "GeoTransform").text = ", ".join(repr(v) for v in grid.transform.to_gdal())
     _add_metadata(root, tags)
     data_type = rasterio.dtypes.typename_fwd[rasterio.dtypes.dtype_rev[grid.dtype]]
+    # One band at a time, with the look and metadata copied from the first tile.
     for band, look in zip(range(1, grid.count + 1), looks):
         band_el = ET.SubElement(root, "VRTRasterBand", dataType=data_type, band=str(band))
         _add_metadata(band_el, look.tags)
@@ -537,6 +522,7 @@ def _write_vrt(
         ET.SubElement(band_el, "ColorInterp").text = look.color_interp
         if look.colormap:
             table = ET.SubElement(band_el, "ColorTable")
+            # The table lists every index from 0 to the largest; unused ones are transparent black.
             for index in range(max(look.colormap) + 1):
                 rgba = look.colormap.get(index, (0, 0, 0, 0))
                 ET.SubElement(table, "Entry", **{f"c{i + 1}": str(v) for i, v in enumerate(rgba)})
@@ -544,6 +530,8 @@ def _write_vrt(
             ET.SubElement(band_el, "Offset").text = repr(float(look.offset))
         if look.scale != 1.0:
             ET.SubElement(band_el, "Scale").text = repr(float(look.scale))
+        # One source per tile: read the whole tile (SrcRect) and place it at its offset
+        # (DstRect) at the same size, so nothing is resampled.
         for header, col, row in placed:
             source = ET.SubElement(band_el, "SimpleSource")
             ET.SubElement(source, "SourceFilename", relativeToVRT="0").text = _gdal_path(header.name)
@@ -609,12 +597,10 @@ def _copy_without_pam(vrt: Path, partial: Path, options: dict) -> None:
         partial: where to write the COG.
         options: COG driver creation options, as GDAL takes them.
 
-    Returns:
-        None.
-
     Raises:
         rasterio.errors.RasterioError: if GDAL cannot read a tile or write the output.
     """
+    # PAM off: GDAL writes no `.aux.xml` files next to the tiles.
     with rasterio.Env(GDAL_PAM_ENABLED="NO"):
         rasterio.shutil.copy(str(vrt), str(partial), driver="COG", **options)
 
@@ -629,9 +615,6 @@ def _hole_pixels(grid: TileGrid, placed: Sequence[tuple[_Header, int, int]]) -> 
 
     Returns:
         The number of uncovered pixels in one band (0 when the tiles fill the grid).
-
-    Raises:
-        Nothing.
     """
     return grid.width * grid.height - sum(h.width * h.height for h, _, _ in placed)
 
@@ -646,31 +629,35 @@ def merge_to_cog(
 ) -> Path:
     """Merge tiles that share one grid into one COG and return the output path.
 
-    The output keeps the tiles' CRS, pixel grid, data type, band count and
-    nodata (none if the tiles have none), and covers the union of the tiles.
-    Places no tile covers are filled with nodata; when the tiles have no nodata
-    they are filled with 0 and, unless the first tile has an alpha band (which
-    is also 0 there, so those places are transparent), a warning is logged
-    with the number of such pixels, since they cannot be told apart from real
-    0 values. Pixels are
-    copied without resampling. The COG is tiled with `blocksize` and compressed
-    with `compress`, and its overviews are built fresh with
-    `overview_resampling`; overviews already inside the tiles are not reused.
-    Band statistics (`STATISTICS_*` tags) are computed by GDAL from the tiles'
-    pixels; those stored in the tiles are not copied. Places no tile covers
-    count as not valid when the tiles have a nodata, and are left out when
-    they do not (0 fill is not in the minimum, mean or valid percent). GDAL
-    does not save statistics or other `.aux.xml` files next to the tiles, so
-    the tiles' folder is left as it was. The COG is written in a separate
-    thread with `.aux.xml` reading turned off for that thread only, so other
-    threads still read `.aux.xml` files while the merge runs. GDAL uses all CPUs
-    (`NUM_THREADS=ALL_CPUS`). Colour interpretation, colour table,
-    band descriptions, scale, offset and other metadata (default domain) are
-    copied from the first tile; the other tiles' values for these are not
-    compared. No config file and no `.env` is read. One info line logs the
-    settings used. It is written to a temporary folder next to `output` and
-    moved into place only when complete, so a failure leaves no output and no
-    temporary files.
+    The output:
+    - keeps the tiles' CRS, pixel grid, data type, band count and nodata (none if
+      the tiles have none), and covers the union of the tiles;
+    - has places no tile covers filled with nodata. When the tiles have no nodata
+      they are filled with 0 and, unless the first tile has an alpha band (which
+      is also 0 there, so those places are transparent), a warning is logged with
+      the number of such pixels, since they cannot be told apart from real 0 values;
+    - holds copied pixels, never resampled;
+    - is tiled with `blocksize` and compressed with `compress`;
+    - has overviews built fresh with `overview_resampling`; overviews already
+      inside the tiles are not reused;
+    - has band statistics (`STATISTICS_*` tags) computed by GDAL from the tiles'
+      pixels; those stored in the tiles are not copied. Places no tile covers
+      count as not valid when the tiles have a nodata, and are left out when they
+      do not (0 fill is not in the minimum, mean or valid percent);
+    - gets colour interpretation, colour table, band descriptions, scale, offset
+      and other metadata (default domain) from the first tile; the other tiles'
+      values for these are not compared.
+
+    How it runs:
+    - GDAL does not save statistics or other `.aux.xml` files next to the tiles,
+      so the tiles' folder is left as it was. The COG is written in a separate
+      thread with `.aux.xml` reading turned off for that thread only, so other
+      threads still read `.aux.xml` files while the merge runs.
+    - GDAL uses all CPUs (`NUM_THREADS=ALL_CPUS`).
+    - No config file and no `.env` is read. One info line logs the settings used.
+    - The COG is written to a temporary folder next to `output` and moved into
+      place only when complete, so a failure leaves no output and no temporary
+      files.
 
     Args:
         tiles: a list or tuple of one or more local paths or URLs GDAL can open.
@@ -698,6 +685,7 @@ def merge_to_cog(
         rasterio.errors.RasterioError: if GDAL cannot read a tile or write the output.
         OSError: if the output folder or temporary files cannot be written.
     """
+    # Check the arguments before touching any file.
     if overview_resampling not in OVERVIEW_METHODS:
         raise ValueError(
             f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
@@ -706,10 +694,12 @@ def merge_to_cog(
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
+    # The tiles must share one grid and not overlap; the look comes from the first tile.
     grid, placed = place_tiles(tiles)
     check_no_overlap(placed)
     tags, looks = _read_look(tiles[0])
 
+    # COG driver options for the final write.
     options = {
         "COMPRESS": codec,
         "BLOCKSIZE": blocksize,
@@ -723,6 +713,7 @@ def merge_to_cog(
         "merging %d tiles into %s: compress=%s blocksize=%d overview_resampling=%s num_threads=%s",
         len(placed), output, codec, blocksize, overview_resampling, options["NUM_THREADS"],
     )
+    # Without a nodata, gaps are filled with 0 and look like real 0 values: warn.
     holes = _hole_pixels(grid, placed)
     has_alpha = any(look.color_interp == "Alpha" for look in looks)
     if grid.nodata is None and holes and not has_alpha:
@@ -732,12 +723,17 @@ def merge_to_cog(
             f"{holes:,}",
         )
     output.parent.mkdir(parents=True, exist_ok=True)
+    # Build in a hidden temporary folder next to the output, so the final move stays on one
+    # disk and a failure leaves nothing behind.
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=f".{output.name}.") as tmp:
         vrt = Path(tmp) / "tiles.vrt"
         partial = Path(tmp) / output.name
         _write_vrt(grid, placed, vrt, tags, looks)
+        # One worker thread, so the PAM setting applies to this write only
+        # (see `_copy_without_pam`).
         with ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(_copy_without_pam, vrt, partial, options).result()
+        # Check again in case something wrote the output meanwhile.
         if output.exists():
             raise FileExistsError(f"output already exists: {output}")
         os.replace(partial, output)

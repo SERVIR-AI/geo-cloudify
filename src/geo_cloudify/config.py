@@ -42,6 +42,9 @@ class Config(BaseModel):
 def load_config(path: str | Path) -> Config:
     """Read and validate the YAML config. Relative paths in it are resolved from the file's folder.
 
+    Returns:
+        The validated config.
+
     Raises:
         FileNotFoundError: if the file does not exist.
         pydantic.ValidationError: if it contains unknown keys or invalid values.
@@ -59,6 +62,10 @@ def load_config(path: str | Path) -> Config:
 def get_config() -> Config:
     """Return the cached config, loaded once from the file named in settings.
 
-    Raises the same as `load_config`.
+    Returns:
+        The config.
+
+    Raises:
+        As `load_config`.
     """
     return load_config(get_settings().config_path)

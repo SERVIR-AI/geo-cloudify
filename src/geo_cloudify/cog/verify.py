@@ -1,11 +1,12 @@
 """COG verification: check that a merged COG is a faithful copy of its tiles.
 
-`check_merged_cog` runs four checks on the output of `merge_to_cog` and returns
+`check_merged_cog` runs these checks on the output of `merge_to_cog` and returns
 every problem it finds, not only the first:
 
 - it is a valid COG (`rio_cogeo.cog_validate`; errors and warnings both count);
 - it has overviews down to one block, or none when it fits in one block;
 - its CRS, transform, size, band count, data type and nodata match the tiles;
+- no two tiles overlap;
 - the count of each pixel value in each band equals the sum over the tiles,
   plus the fill in gaps between tiles. This catches dropped, doubled or changed pixels.
 
@@ -61,12 +62,6 @@ class _TooManyValues(Exception):
 
         Args:
             band: the 1-based band number.
-
-        Returns:
-            None.
-
-        Raises:
-            Nothing.
         """
         super().__init__(f"band {band}")
         self.band = band
@@ -91,9 +86,6 @@ class Problem:
 
         Returns:
             The field and detail joined by ": ".
-
-        Raises:
-            Nothing.
         """
         return f"{self.field}: {self.detail}"
 
@@ -122,9 +114,6 @@ class MergeCheck:
 
         Returns:
             True if `problems` is empty, otherwise False.
-
-        Raises:
-            Nothing.
         """
         return not self.problems
 
@@ -133,14 +122,17 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
     """Check that `output` is a valid COG holding exactly the pixels of `tiles`.
 
     The expected grid is the union of the tiles, as `check_tiles` gives it. The
-    checks are: a valid COG (any `cog_validate` error or warning is a problem);
-    overviews whose smallest level fits in one block (an image that fits in one
-    block needs none, and every band must have the same levels); CRS (compared
-    as a CRS), transform (with a tiny float tolerance), size, band count, data
-    type and nodata equal to the tiles'; no two tiles overlap; and, per band, the
-    count of each value equals the sum over the tiles at full resolution, where
-    the expected count of the fill value (the nodata, or 0 when there is none)
-    also includes the gap pixels no tile covers. NaN values count as one value.
+    checks are:
+    - a valid COG (any `cog_validate` error or warning is a problem);
+    - overviews whose smallest level fits in one block (an image that fits in one
+      block needs none, and every band must have the same levels);
+    - CRS (compared as a CRS), transform (with a tiny float tolerance), size,
+      band count, data type and nodata equal to the tiles';
+    - no two tiles overlap;
+    - per band, the count of each value equals the sum over the tiles at full
+      resolution, where the expected count of the fill value (the nodata, or 0
+      when there is none) also includes the gap pixels no tile covers. NaN
+      values count as one value.
 
     Pixels are verified by these value counts only, which assumes class data
     (few distinct values). Pixel counts are skipped when the band count or data
@@ -173,15 +165,18 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
     if np.dtype(grid.dtype).kind == "c":
         raise ValueError(f"pixel counts are not supported for complex data ({grid.dtype})")
     problems: list[Problem] = []
+    # Checks on the output file itself: COG validity, overviews and grid fields.
     with rasterio.open(output) as out:
         problems += _check_cog(output)
         problems += _check_overviews(out, output)
         problems += _check_grid(out, grid)
         same_layout = out.count == grid.count and set(out.dtypes) == {grid.dtype}
+    # Overlapping tiles are reported as a problem here, not raised.
     try:
         check_no_overlap(placed)
     except TileMismatchError as error:
         problems.append(Problem("overlap", str(error)))
+    # Compare pixel counts only when the output has the same band count and data type.
     counts_checked = False
     if same_layout:
         count_problems = _check_counts([h.name for h, _, _ in placed], output, grid)
@@ -199,9 +194,6 @@ def _check_cog(output: str | PathLike) -> list[Problem]:
 
     Returns:
         One "cog" problem per error or warning; empty when the file is a clean COG.
-
-    Raises:
-        Nothing: `cog_validate` reports a file it cannot read as an error.
     """
     is_valid, errors, warnings = cog_validate(str(output), quiet=True)
     problems = [Problem("cog", f"error: {e}") for e in errors]
@@ -227,17 +219,20 @@ def _check_overviews(out: DatasetReader, output: str | PathLike) -> list[Problem
     """
     problems = []
     factors = out.overviews(1)
+    # Every band must have the same overview levels as band 1.
     for band in range(2, out.count + 1):
         if out.overviews(band) != factors:
             problems.append(Problem(
                 "overviews", f"band {band} has levels {out.overviews(band)}, band 1 has {factors}"
             ))
+    # Size of the smallest level; with no overviews that is the full image.
     if factors:
         with rasterio.open(output, overview_level=len(factors) - 1) as smallest:
             width, height = smallest.width, smallest.height
     else:
         width, height = out.width, out.height
     block_height, block_width = out.block_shapes[0]
+    # The smallest level must fit in one block.
     if width > block_width or height > block_height:
         problems.append(Problem(
             "overviews",
@@ -257,10 +252,8 @@ def _same_transform(a: Affine, b: Affine) -> bool:
     Returns:
         True if the pixel sizes match within a relative 1e-9, the rotation terms
         are zero and the origins are within a millionth of a pixel.
-
-    Raises:
-        Nothing.
     """
+    # Origin and rotation may be off by a millionth of a pixel, in map units.
     tol_x, tol_y = ALIGN_TOLERANCE * abs(b.a), ALIGN_TOLERANCE * abs(b.e)
     return (
         math.isclose(a.a, b.a, rel_tol=PIXEL_SIZE_TOLERANCE)
@@ -280,9 +273,6 @@ def _check_grid(out: DatasetReader, grid: TileGrid) -> list[Problem]:
     Returns:
         Problems with field "crs", "transform", "size", "band count", "data type"
         or "nodata", one per field that differs.
-
-    Raises:
-        Nothing.
     """
     problems = []
     if out.crs is None or out.crs != grid.crs:
@@ -315,16 +305,17 @@ def _windows(dataset: DatasetReader) -> Iterator[Window]:
 
     Yields:
         Windows in row order that together cover every pixel once.
-
-    Raises:
-        Nothing.
     """
     block_height, block_width = dataset.block_shapes[0]
+    # Whole blocks of rows that fit the pixel budget at full width (at least one block).
     rows = block_height * max(1, _WINDOW_PIXELS // (block_height * dataset.width))
+    # If a full-width window fits the budget, windows span the whole width.
     if rows * dataset.width <= _WINDOW_PIXELS:
         cols = dataset.width
     else:
+        # Very wide image: cut the width into whole blocks as well.
         cols = block_width * max(1, _WINDOW_PIXELS // (rows * block_width))
+    # Walk the image row by row; windows at the edges are cut to fit.
     for row in range(0, dataset.height, rows):
         for col in range(0, dataset.width, cols):
             yield Window(col, row, min(cols, dataset.width - col), min(rows, dataset.height - row))
@@ -340,25 +331,24 @@ def _as_bits(data: np.ndarray) -> np.ndarray:
 
     Returns:
         The same values viewed as uint8, uint16, uint32 or uint64.
-
-    Raises:
-        Nothing.
     """
     if data.dtype.kind == "f":
+        # Replace every NaN with one NaN, so all NaNs share one bit pattern.
         data = np.where(np.isnan(data), np.array(np.nan, dtype=data.dtype), data)
+    # Read the same bytes as unsigned integers of the same width.
     return data.view(f"u{data.dtype.itemsize}")
 
 
 def _count_values(source: str | PathLike) -> list[Counter]:
     """Count each pixel value in each band of `source`, at full resolution, window by window.
 
-    Args:
-        source: a local path or URL GDAL can open, with a real data type.
-
     Byte and 16-bit bands are counted in a fixed-size histogram. Wider bands
     are counted in a Counter. A window's distinct values are checked against
     `_MAX_DISTINCT_VALUES` before they are listed or added, so the Counter never
     holds more than twice that many.
+
+    Args:
+        source: a local path or URL GDAL can open, with a real data type.
 
     Returns:
         One Counter per band, mapping each value's bit pattern (see `_as_bits`)
@@ -375,6 +365,7 @@ def _count_values(source: str | PathLike) -> list[Counter]:
         result = []
         for band in range(1, dataset.count + 1):
             itemsize = np.dtype(dataset.dtypes[band - 1]).itemsize
+            # 8 and 16-bit bands: count every value with a fixed-size histogram.
             histogram = np.zeros(1 << (8 * itemsize), dtype=np.int64) if itemsize <= 2 else None
             counts: Counter = Counter()
             for window in windows:
@@ -382,10 +373,15 @@ def _count_values(source: str | PathLike) -> list[Counter]:
                 if histogram is not None:
                     histogram += np.bincount(bits, minlength=histogram.size)
                 else:
+                    # Wider bands: sort so equal values sit side by side, then
+                    # count each run of equal values instead of looping per pixel.
                     bits.sort()
+                    # True wherever a new value starts.
                     change = bits[1:] != bits[:-1]
+                    # Stop early if this window alone has too many distinct values.
                     if int(np.count_nonzero(change)) + 1 > _MAX_DISTINCT_VALUES:
                         raise _TooManyValues(band)
+                    # Start index and length of each run, added to the running counts.
                     starts = np.concatenate(([0], np.flatnonzero(change) + 1))
                     n = np.diff(np.append(starts, bits.size))
                     counts.update(dict(zip(bits[starts].tolist(), n.tolist())))
@@ -415,6 +411,7 @@ def _expected_counts(tiles: Sequence[str], grid: TileGrid) -> list[Counter] | in
     """
     expected = [Counter() for _ in range(grid.count)]
     tile_pixels = 0
+    # Add up each tile's value counts; give up when a band has too many distinct values.
     for tile in tiles:
         with rasterio.open(tile) as dataset:
             tile_pixels += dataset.width * dataset.height
@@ -426,12 +423,15 @@ def _expected_counts(tiles: Sequence[str], grid: TileGrid) -> list[Counter] | in
             band_counts.update(counts)
             if len(band_counts) > _MAX_DISTINCT_VALUES:
                 return band
+    # Pixels no tile covers hold the fill value: the nodata, or 0 when there is none.
     gap = grid.width * grid.height - tile_pixels
     if gap > 0:
         fill = np.array([0 if grid.nodata is None else grid.nodata], dtype=np.dtype(grid.dtype))
+        # Counts are keyed by bit pattern, so turn the fill value into one the same way.
         fill_bits = int(_as_bits(fill)[0])
         for band_counts in expected:
             band_counts[fill_bits] += gap
+    # The gap fill may add one more value, so check the limit again.
     for band, band_counts in enumerate(expected, start=1):
         if len(band_counts) > _MAX_DISTINCT_VALUES:
             return band
@@ -462,6 +462,8 @@ def _check_counts(
     """
     dtype = np.dtype(grid.dtype)
     expected = _expected_counts(tiles, grid)
+    # The tiles hold too many distinct values (`expected` is the band number). If the
+    # output does too, skip the check; if not, the counts cannot match.
     if isinstance(expected, int):
         try:
             output_counts = _count_values(output)
@@ -476,6 +478,7 @@ def _check_counts(
             )
         ]
 
+    # The tiles are within the limit but the output is not: the counts cannot match.
     try:
         output_counts = _count_values(output)
     except _TooManyValues as error:
@@ -487,6 +490,7 @@ def _check_counts(
                 f"distinct values, tiles hold {held:,}",
             )
         ]
+    # Per band, list the values whose counts differ.
     problems = []
     for band, (want, got) in enumerate(zip(expected, output_counts), start=1):
         differ = sorted(v for v in want.keys() | got.keys() if want[v] != got[v])
@@ -537,6 +541,7 @@ def compare_pixels(tiles: Sequence[str | PathLike], output: str | PathLike) -> t
         raise ValueError(f"pixel comparison is not supported for complex data ({grid.dtype})")
     check_no_overlap(placed)
     fill = 0 if grid.nodata is None else grid.nodata
+    # ExitStack keeps the output and every tile open until the comparison ends.
     with ExitStack() as stack:
         out = stack.enter_context(rasterio.open(output))
         different = _grid_difference(out, grid)
@@ -549,12 +554,15 @@ def compare_pixels(tiles: Sequence[str | PathLike], output: str | PathLike) -> t
             differing = 0
             listed: list[str] = []
             for window in windows:
+                # Start the window as all fill, then paste in each tile that reaches it.
                 expected = np.full((window.height, window.width), fill, dtype=dtype)
                 for source, col, row in sources:
                     _paste(expected, window, source, band, col, row)
                 found = out.read(band, window=window)
+                # True wherever the output differs from what is expected.
                 mismatch = _as_bits(expected) != _as_bits(found)
                 differing += int(np.count_nonzero(mismatch))
+                # Keep the first few differing places for the message.
                 if len(listed) < _MAX_LISTED_PIXELS and differing:
                     listed += _first_places(mismatch, expected, found, window, _MAX_LISTED_PIXELS - len(listed))
             if differing:
@@ -575,9 +583,6 @@ def _grid_difference(out: DatasetReader, grid: TileGrid) -> str | None:
     Returns:
         A short plain reason when the size, transform, band count or data type
         differs from the grid; None when they all match.
-
-    Raises:
-        Nothing.
     """
     if (out.width, out.height) != (grid.width, grid.height):
         return f"output is {out.width} x {out.height}, tiles cover {grid.width} x {grid.height}"
@@ -593,7 +598,9 @@ def _grid_difference(out: DatasetReader, grid: TileGrid) -> str | None:
 def _paste(
     expected: np.ndarray, window: Window, source: DatasetReader, band: int, col: int, row: int
 ) -> None:
-    """Copy the part of one tile that falls inside `window` into `expected`.
+    """Copy the part of one tile that falls inside `window` into `expected`, in place.
+
+    Nothing is copied when the tile does not reach the window.
 
     Args:
         expected: the window's expected values, shape (window height, window width).
@@ -603,19 +610,19 @@ def _paste(
         col: the tile's left column on the union grid.
         row: the tile's top row on the union grid.
 
-    Returns:
-        None. `expected` is changed in place; nothing happens when the tile
-        does not reach the window.
 
     Raises:
         rasterio.errors.RasterioError: if GDAL cannot read the tile's pixels.
     """
     w_col, w_row = int(window.col_off), int(window.row_off)
+    # The part of the tile inside the window, as a box on the union grid.
     left, right = max(w_col, col), min(w_col + window.width, col + source.width)
     top, bottom = max(w_row, row), min(w_row + window.height, row + source.height)
     if left >= right or top >= bottom:
         return
+    # The same box in the tile's own pixels, to read.
     part = Window(left - col, top - row, right - left, bottom - top)
+    # The same box in the window's pixels, to write.
     expected[top - w_row:bottom - w_row, left - w_col:right - w_col] = source.read(band, window=part)
 
 
@@ -635,12 +642,10 @@ def _first_places(
 
     Returns:
         Up to `limit` strings "column C, row R: expected E, found F".
-
-    Raises:
-        Nothing.
     """
     places: list[str] = []
     for r in range(mismatch.shape[0]):
+        # Columns of differing pixels in this row, only as many as are still needed.
         for c in np.flatnonzero(mismatch[r])[:limit - len(places)]:
             places.append(
                 f"column {int(window.col_off) + int(c)}, row {int(window.row_off) + r}: "
@@ -660,8 +665,6 @@ def _value(bits: int, dtype: np.dtype) -> int | float:
 
     Returns:
         The value as a Python int or float.
-
-    Raises:
-        Nothing.
     """
+    # Put the bits in an unsigned array, then read the same bytes as the real type.
     return np.array([bits], dtype=f"u{dtype.itemsize}").view(dtype)[0].item()

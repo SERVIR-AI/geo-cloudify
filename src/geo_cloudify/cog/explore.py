@@ -51,9 +51,6 @@ def detect(path: Path) -> bool:
         netCDF driver; NetCDF goes to Zarr, never to COG), is not georeferenced
         (no CRS and the default transform), or is an HDF cube (a time or depth
         dimension).
-
-    Raises:
-        Nothing: rasterio errors on opening are caught and give False.
     """
     try:
         with rasterio.open(path) as ds:
@@ -80,21 +77,30 @@ def is_netcdf_dataset(ds) -> bool:
 
     Returns:
         True for a NetCDF file (any shape, including NetCDF4), False otherwise.
-
-    Raises:
-        Nothing.
     """
     return (ds.driver or "").lower() == NETCDF_DRIVER
 
 
 def is_cog(path: Path) -> bool:
-    """Return True if the file already validates as a COG (no errors)."""
+    """Return True if the file already validates as a COG (no errors).
+
+    Returns:
+        True when `cog_validate` reports no errors, otherwise False.
+    """
     _, errors, _ = cog_validate(str(path))
     return not errors
 
 
 def fingerprint(path: Path) -> RasterFingerprint:
-    """Return the raster's metadata fingerprint. Reads metadata only, no pixels."""
+    """Return the raster's metadata fingerprint. Reads metadata only, no pixels.
+
+    Returns:
+        The raster's size, band count, data type, transform, CRS, nodata, colour table,
+        scales, offsets and units.
+
+    Raises:
+        rasterio.errors.RasterioIOError: if GDAL cannot open the file.
+    """
     with rasterio.open(path) as ds:
         return RasterFingerprint(
             width=ds.width,
@@ -117,10 +123,13 @@ def resolve_settings(fingerprint: RasterFingerprint, cog_kwargs: dict | None) ->
     Resolution order: defaults, then data-derived values, then user kwargs.
     User kwargs always win. Option names are case-insensitive (uppercased).
 
+    Returns:
+        A dict of COG driver options, plus NODATA and CRS when they apply.
+
     Raises:
         ValueError: if cog_kwargs contains an option the COG driver does not know.
     """
-    # Key is capitalized to handle the case where it is all lowercase/first letter capitalized
+    # Option names are case-insensitive: uppercase them all.
     kwargs = {str(key).upper(): value for key, value in (cog_kwargs or {}).items()}
     validate_cog_kwargs(kwargs)
     nodata = kwargs.pop("NODATA", None)
@@ -220,19 +229,32 @@ def explore(main: Path, companions: list[Path], source: str, cog_kwargs: dict | 
 
 
 def _is_default_transform(transform) -> bool:
-    """Return True if the transform is GDAL's default (identity) geotransform."""
+    """Return True if the transform is GDAL's default (identity) geotransform.
+
+    Returns:
+        True when the transform equals GDAL's default, otherwise False.
+    """
     return transform.to_gdal() == DEFAULT_TRANSFORM
 
 
 def _is_cube(ds) -> bool:
-    """Return True for an HDF file with more than one band or subdatasets."""
+    """Return True for an HDF file with more than one band or subdatasets.
+
+    Returns:
+        True for an HDF cube, otherwise False.
+    """
     if (ds.driver or "").lower() not in CUBE_DRIVERS:
         return False
     return ds.count > 1 or bool(ds.subdatasets)
 
 
 def _color_table(ds) -> list[list[int]] | None:
-    """Return the colour table as rows of [index, r, g, b, a], or None."""
+    """Return the colour table as rows of [index, r, g, b, a], or None.
+
+    Returns:
+        The rows sorted by index (alpha is 255 when the table has none), or None when
+        band 1 has no colour table.
+    """
     try:
         colormap = ds.colormap(1)
     except ValueError:
@@ -242,13 +264,14 @@ def _color_table(ds) -> list[list[int]] | None:
     rows = []
     for index, rgba in sorted(colormap.items()):
         r, g, b = rgba[0], rgba[1], rgba[2]
+        # Some tables hold only r, g, b; those entries are opaque.
         alpha = rgba[3] if len(rgba) > 3 else 255
         rows.append([index, r, g, b, alpha])
     return rows
 
 
 def validate_cog_kwargs(cog_kwargs: dict) -> None:
-    """Check cog_kwargs names (case-insensitive) and values. Returns None.
+    """Check cog_kwargs names (case-insensitive) and values.
 
     Raises:
         ValueError: if a key is not an option the COG driver knows, or a value
@@ -275,14 +298,12 @@ def check_cog_values(settings: dict) -> None:
             {"COMPRESS": "DEFLATE", "BLOCKSIZE": 512}. Only the keys checked
             below are looked at; others are ignored.
 
-    Returns:
-        None.
-
     Raises:
         pydantic.ValidationError, yaml.YAMLError, FileNotFoundError: as
             `config.get_config`, only when the config file is read (see above).
         ValueError: if a value is out of range or not a number where one is needed.
     """
+    # A power of two has one bit set, so `size & (size - 1)` is 0 only for powers of two.
     if "BLOCKSIZE" in settings:
         size = _as_int(settings["BLOCKSIZE"])
         if size is None or not (16 <= size <= 4096 and size & (size - 1) == 0):
@@ -297,10 +318,12 @@ def check_cog_values(settings: dict) -> None:
         count = _as_int(settings["OVERVIEW_COUNT"])
         if count is None or not 0 <= count <= 16:
             raise ValueError(f"OVERVIEW_COUNT must be a whole number from 0 to 16, got {settings['OVERVIEW_COUNT']!r}")
+    # NUM_THREADS is ALL_CPUS or a whole number of 1 or more.
     if "NUM_THREADS" in settings and str(settings["NUM_THREADS"]).upper() != "ALL_CPUS":
         threads = _as_int(settings["NUM_THREADS"])
         if threads is None or threads < 1:
             raise ValueError(f"NUM_THREADS must be ALL_CPUS or a whole number of 1 or more, got {settings['NUM_THREADS']!r}")
+    # Each codec has its own LEVEL range.
     if "LEVEL" in settings:
         low, high = LEVEL_RANGES.get(compress, (0, 22))
         level = _as_int(settings["LEVEL"])
@@ -317,18 +340,28 @@ def check_cog_values(settings: dict) -> None:
 
 
 def _as_int(value) -> int | None:
-    """Return value as a whole number, or None if it is not one."""
+    """Return value as a whole number, or None if it is not one.
+
+    Returns:
+        The value as an int, or None for a bool, a non-number or a fraction.
+    """
     if isinstance(value, bool):
         return None
     try:
+        # Go through a string and a float, so 512, "512" and 512.0 are all accepted.
         number = float(str(value))
     except ValueError:
         return None
+    # A fraction such as 512.5 is not a whole number.
     return int(number) if number.is_integer() else None
 
 
 def _as_float(value) -> float | None:
-    """Return value as a number, or None if it is not one."""
+    """Return value as a number, or None if it is not one.
+
+    Returns:
+        The value as a float, or None for a bool or a non-number.
+    """
     if isinstance(value, bool):
         return None
     try:
@@ -338,12 +371,20 @@ def _as_float(value) -> float | None:
 
 
 def _is_lossy(settings: dict) -> bool:
-    """Return True if the resolved settings use lossy compression or reprojection."""
+    """Return True if the resolved settings use lossy compression or reprojection.
+
+    Returns:
+        True for JPEG, WEBP, a tiling scheme, or LERC with a positive or unreadable
+        MAX_Z_ERROR; otherwise False.
+    """
     compress = str(settings.get("COMPRESS", "")).upper()
+    # JPEG and WEBP change pixel values.
     if compress in ("JPEG", "WEBP"):
         return True
+    # A tiling scheme reprojects the raster.
     if settings.get("TILING_SCHEME"):
         return True
+    # LERC is lossless only when MAX_Z_ERROR is 0.
     if compress in ("LERC", "LERC_DEFLATE", "LERC_ZSTD"):
         try:
             return float(settings.get("MAX_Z_ERROR", 0)) > 0

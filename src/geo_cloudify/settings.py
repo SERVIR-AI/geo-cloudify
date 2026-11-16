@@ -18,5 +18,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return the cached settings, read once from the environment and `.env`."""
+    """Return the cached settings, read once from the environment and `.env`.
+
+    Returns:
+        The settings.
+    """
     return Settings()

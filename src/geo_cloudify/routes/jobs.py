@@ -46,6 +46,9 @@ def create_job(request: CreateJobRequest, background_tasks: BackgroundTasks) -> 
     """Create a job and run it in the background; return its ID straight away.
 
     Extra keys in the request body and unknown cog_kwargs options are rejected (HTTP 422).
+
+    Returns:
+        A dict with the new job's ID under "job_id".
     """
     items = [SourceRequest(source=s) if isinstance(s, str) else s for s in request.sources]
     job = store.create([i.source for i in items], {i.source: i.cog_kwargs for i in items})
@@ -56,6 +59,9 @@ def create_job(request: CreateJobRequest, background_tasks: BackgroundTasks) -> 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     """Return the job status, error, per-source results, plan and conversions.
+
+    Returns:
+        A dict with the job's status, error, results, plan and conversions.
 
     Raises:
         HTTPException: 404 if the job does not exist.

@@ -36,12 +36,16 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
     already holds files from earlier calls, only the newly added files are returned,
     so each source is attributed only its own files.
 
+    Returns:
+        The paths of the files this call added, sorted.
+
     Raises:
         DownloadError: if any source cannot be fetched or unpacked.
     """
     base = Path(download_dir) if download_dir is not None else get_config().download.dir
     job_dir = base / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    # Snapshot of the folder, to tell this call's files from earlier ones.
     before = {p for p in job_dir.rglob("*") if p.is_file()}
 
     for source in sources:
@@ -59,6 +63,7 @@ def fetch_sources(sources: list[str], job_id: str, download_dir: str | Path | No
     for archive in new_archives:
         _unpack(archive)
 
+    # Whatever is new since the snapshot belongs to this call.
     after = {p for p in job_dir.rglob("*") if p.is_file()}
     return sorted(after - before)
 
@@ -120,7 +125,11 @@ def _download_once(url: str, job_dir: Path) -> None:
 
 
 def _is_transient(exc: BaseException) -> bool:
-    """Return True for failures worth retrying (HTTP 5xx and network errors)."""
+    """Return True for failures worth retrying (HTTP 5xx and network errors).
+
+    Returns:
+        True for an HTTP 5xx or a network error, otherwise False.
+    """
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code >= 500
     return isinstance(exc, urllib.error.URLError)
@@ -129,8 +138,8 @@ def _is_transient(exc: BaseException) -> bool:
 def _unpack(archive: Path) -> None:
     """Unpack an archive into a folder named after it, then remove the archive.
 
-    Returns nothing. On failure removes the half-made folder and raises; the
-    archive itself is kept for debugging.
+    On failure removes the half-made folder and raises; the archive itself is
+    kept for debugging.
 
     Raises:
         DownloadError: if an entry would escape the folder or the archive is unreadable.
@@ -148,6 +157,7 @@ def _unpack(archive: Path) -> None:
         else:
             with tarfile.open(archive) as tf:
                 try:
+                    # The "data" filter refuses paths outside the folder, links and special files.
                     tf.extractall(out, filter="data")
                 except tarfile.FilterError as e:
                     raise DownloadError(f"{archive.name}: '{e.tarinfo.name}' would unpack outside the folder") from e
@@ -161,13 +171,22 @@ def _unpack(archive: Path) -> None:
 
 
 def _is_archive(path: Path) -> bool:
-    """Return True if the path looks like a supported archive."""
+    """Return True if the path looks like a supported archive.
+
+    Returns:
+        True when the name ends with an archive suffix, otherwise False.
+    """
     return path.name.lower().endswith(ARCHIVE_SUFFIXES)
 
 
 def _archive_stem(path: Path) -> str:
-    """Return the file name without its archive suffix."""
+    """Return the file name without its archive suffix.
+
+    Returns:
+        The name with the longest matching archive suffix removed.
+    """
     name = path.name
+    # Remove the archive suffix from the end of the name, longest suffix first.
     for suffix in sorted(ARCHIVE_SUFFIXES, key=len, reverse=True):
         if name.lower().endswith(suffix):
             return name[: -len(suffix)]
@@ -176,6 +195,9 @@ def _archive_stem(path: Path) -> str:
 
 def _available_target(target: Path) -> Path:
     """Return the path if nothing exists there yet, else raise.
+
+    Returns:
+        The same path.
 
     Raises:
         DownloadError: if a file or folder already exists at that path.
