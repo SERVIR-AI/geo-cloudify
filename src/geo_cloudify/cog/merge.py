@@ -31,7 +31,10 @@ from rasterio.crs import CRS
 from rasterio.enums import MaskFlags
 from rasterio.transform import Affine
 
-from geo_cloudify.cog.explore import COG_COMPRESS, check_cog_values
+# COMPRESS values listed in the GDAL COG driver documentation.
+COG_COMPRESS = frozenset(
+    {"NONE", "LZW", "JPEG", "DEFLATE", "ZSTD", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", "LZMA"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -556,7 +559,7 @@ def _cog_options(compress: str, blocksize: int) -> tuple[str, int]:
         compress: a lossless codec the COG driver knows: "DEFLATE", "LZW",
             "ZSTD", "LZMA" or "NONE", in any case.
         blocksize: a whole-number integer type (`int` or a numpy integer such
-            as `np.int64`; not a bool, float or string) that is a power of two
+            as `np.int64`; not a bool, float or string) that is a multiple of 16
             from 16 to 4096.
 
     Returns:
@@ -566,7 +569,7 @@ def _cog_options(compress: str, blocksize: int) -> tuple[str, int]:
         ValueError: if `compress` is not a string, is a lossy codec ("JPEG",
             "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", in any case) or is not
             a codec the COG driver knows, or `blocksize` is not an integer that
-            is a power of two from 16 to 4096.
+            is a multiple of 16 from 16 to 4096.
     """
     if not isinstance(compress, str):
         raise ValueError(f"compress must be a codec name, got {compress!r}")
@@ -576,9 +579,10 @@ def _cog_options(compress: str, blocksize: int) -> tuple[str, int]:
     if codec not in COG_COMPRESS:
         raise ValueError(f"compress must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compress!r}")
     if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
-        raise ValueError(f"BLOCKSIZE must be an integer, a power of two from 16 to 4096, got {blocksize!r}")
+        raise ValueError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
     blocksize = int(blocksize)
-    check_cog_values({"COMPRESS": codec, "BLOCKSIZE": blocksize})
+    if not (blocksize % 16 == 0 and 16 <= blocksize <= 4096):
+        raise ValueError(f"BLOCKSIZE must be a multiple of 16 from 16 to 4096, got {blocksize!r}")
     return codec, blocksize
 
 
@@ -667,7 +671,7 @@ def merge_to_cog(
         compress: a lossless codec: "DEFLATE" (default), "LZW", "ZSTD",
             "LZMA" or "NONE", in any case.
         blocksize: the COG's block size in pixels, an integer (`int` or a
-            numpy integer) that is a power of two from 16 to 4096 (default 512).
+            numpy integer) that is a multiple of 16 from 16 to 4096 (default 512).
 
     Returns:
         The output path, as given, as a Path.
