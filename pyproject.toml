@@ -17,10 +17,6 @@ dependencies = [
 geo-cloudify = "geo_cloudify:main"
 
 [project.optional-dependencies]
-api = [
-    "fastapi>=0.162.2",
-    "uvicorn>=0.54.0",
-]
 cog = [
     "numpy>=2.5.4",
     "rasterio>=1.5.2",
@@ -33,6 +29,5 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.16.0",
     "pytest>=9.2.0",
 ]
