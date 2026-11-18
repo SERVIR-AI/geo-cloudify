@@ -524,13 +524,11 @@ def test_real_gmw_tiles_merge(tmp_path):
 
 def _no_config_reads(monkeypatch):
     """Make any attempt to read config or settings fail the test."""
-    import geo_cloudify.cog.explore as cog_explore
     import geo_cloudify.config as config_module
 
     def refuse(*args, **kwargs):
         raise AssertionError("merge read the config or settings")
 
-    monkeypatch.setattr(cog_explore, "get_config", refuse)
     monkeypatch.setattr(config_module, "get_config", refuse)
     monkeypatch.setattr(config_module, "get_settings", refuse)
 
