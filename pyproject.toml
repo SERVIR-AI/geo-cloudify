@@ -9,9 +9,6 @@ authors = [
 requires-python = ">=3.12"
 dependencies = []
 
-[project.scripts]
-geo-cloudify = "geo_cloudify:main"
-
 [project.optional-dependencies]
 cog = [
     "numpy>=2.5.4",
