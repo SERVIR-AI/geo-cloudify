@@ -7,11 +7,7 @@ authors = [
     { name = "Arif Syraj", email = "126988341+arif-syr@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
-dependencies = [
-    "pydantic>=2.14.3",
-    "pydantic-settings>=2.16.2",
-    "pyyaml>=6.0.3",
-]
+dependencies = []
 
 [project.scripts]
 geo-cloudify = "geo_cloudify:main"

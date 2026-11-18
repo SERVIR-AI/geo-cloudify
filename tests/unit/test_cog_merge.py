@@ -17,8 +17,6 @@ from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import TileGrid, TileMismatchError, _gdal_path, check_tiles, merge_to_cog
-from geo_cloudify.config import get_config
-from geo_cloudify.settings import get_settings
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
 X0, Y0, PIXEL = -1260450.0, 3413550.0, 30.0
@@ -408,29 +406,6 @@ def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     assert output == Path("merged.tif")
 
 
-@pytest.fixture
-def no_config_file(tmp_path, monkeypatch):
-    """Run in a folder with no config.yaml and no GEO_CLOUDIFY_CONFIG, with fresh caches."""
-    folder = tmp_path / "elsewhere"
-    folder.mkdir()
-    monkeypatch.chdir(folder)
-    monkeypatch.delenv("GEO_CLOUDIFY_CONFIG", raising=False)
-    get_settings.cache_clear()
-    get_config.cache_clear()
-    yield folder
-    get_settings.cache_clear()
-    get_config.cache_clear()
-
-
-def test_merge_works_from_a_folder_without_a_config_file(tmp_path, no_config_file):
-    tiles = _random_tiles(tmp_path)
-    output = merge_to_cog(tiles, no_config_file / "merged.tif", "mode")
-    _assert_tiles_placed(output, tiles)
-    with rasterio.open(output) as out:
-        assert out.compression.name == "deflate"
-        assert out.block_shapes[0] == (512, 512)
-
-
 def test_first_tile_colours_and_metadata_are_kept(tmp_path):
     tiles = _random_tiles(tmp_path)
     colormap = {0: (0, 0, 0, 0), 1: (10, 120, 30, 255), 22: (200, 0, 0, 255)}
@@ -520,41 +495,7 @@ def test_real_gmw_tiles_merge(tmp_path):
         assert out.overviews(1)
 
 
-# --- settings: no config file, lossless codecs only -------------------------------------
-
-def _no_config_reads(monkeypatch):
-    """Make any attempt to read config or settings fail the test."""
-    import geo_cloudify.config as config_module
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("merge read the config or settings")
-
-    monkeypatch.setattr(config_module, "get_config", refuse)
-    monkeypatch.setattr(config_module, "get_settings", refuse)
-
-
-def test_merge_ignores_a_hostile_config_file_and_env(tmp_path, monkeypatch):
-    folder = tmp_path / "catalog"
-    folder.mkdir()
-    (folder / "config.yaml").write_text("cog:\n  compress: JPEG\n  blocksize: 99\n  unknown: 1\n")
-    (folder / "broken.yaml").write_text("cog: [not: valid: yaml\n")
-    (folder / ".env").write_text("GEO_CLOUDIFY_CONFIG=broken.yaml\n")
-    monkeypatch.chdir(folder)
-    monkeypatch.delenv("GEO_CLOUDIFY_CONFIG", raising=False)
-    get_settings.cache_clear()
-    get_config.cache_clear()
-    try:
-        _no_config_reads(monkeypatch)
-        tiles = _random_tiles(tmp_path)
-        output = merge_to_cog(tiles, folder / "merged.tif", "mode")
-    finally:
-        get_settings.cache_clear()
-        get_config.cache_clear()
-    _assert_tiles_placed(output, tiles)
-    with rasterio.open(output) as out:
-        assert out.compression.name == "deflate"
-        assert out.block_shapes[0] == (512, 512)
-
+# --- settings: defaults, lossless codecs only -------------------------------------------
 
 def test_defaults_are_used_and_logged(tmp_path, caplog):
     tiles = _random_tiles(tmp_path)
