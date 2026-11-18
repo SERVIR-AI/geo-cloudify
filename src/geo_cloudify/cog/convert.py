@@ -13,7 +13,7 @@ from pathlib import Path
 import rasterio
 import rasterio.shutil
 
-from geo_cloudify.cog.merge import OVERVIEW_METHODS, _cog_options
+from geo_cloudify.cog.merge import OVERVIEW_METHODS, cog_options
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def to_cog(
         raise ValueError(
             f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
         )
-    codec, blocksize = _cog_options(compress, blocksize)
+    codec, blocksize = cog_options(compress, blocksize)
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")

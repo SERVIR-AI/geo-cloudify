@@ -552,7 +552,7 @@ OVERVIEW_METHODS = ("nearest", "mode", "average")
 LOSSY_CODECS = frozenset({"JPEG", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD"})
 
 
-def _cog_options(compress: str, blocksize: int) -> tuple[str, int]:
+def cog_options(compress: str, blocksize: int) -> tuple[str, int]:
     """Check the codec and block size for a merge and return them as GDAL takes them.
 
     Args:
@@ -694,7 +694,7 @@ def merge_to_cog(
         raise ValueError(
             f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
         )
-    codec, blocksize = _cog_options(compress, blocksize)
+    codec, blocksize = cog_options(compress, blocksize)
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
