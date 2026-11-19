@@ -353,7 +353,7 @@ def check_no_overlap(placed: Sequence[tuple[_TileHeader, int, int]]) -> None:
 
     Args:
         placed: each tile's header with its column and row on the union grid,
-            as returned by `validate_and_place_tiles`.
+            as returned by `_validate_and_place_tiles`.
 
     Raises:
         TileMismatchError: naming the later of two overlapping tiles, with field
