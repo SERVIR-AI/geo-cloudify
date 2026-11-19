@@ -1,5 +1,5 @@
-# Agent instructions (local only)
-CLAUDE.md
+# Personal agent instructions (local only); CLAUDE.md and AGENTS.md are shared
+CLAUDE.local.md
 
 # Python
 __pycache__/
@@ -32,4 +32,3 @@ tests/fixtures/data/
 
 # Job temp folders
 tmp/
-docs/
