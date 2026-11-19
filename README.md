@@ -17,11 +17,11 @@ from geo_cloudify.cog.convert import to_cog
 to_cog("input.tif", "output.tif", "average")
 ```
 
-`to_cog(source, output, overview_resampling, *, compress="DEFLATE", blocksize=512)` returns the output path.
+`to_cog(source, output, overview_resampling, *, compression_codec="DEFLATE", blocksize=512)` returns the output path.
 
 - `source`: a local path or a GDAL-readable path.
 - `overview_resampling`: `nearest` or `mode` for class data, `average` for continuous data. Nothing else is accepted.
-- `compress`: a lossless codec, `DEFLATE` (default), `LZW`, `ZSTD`, `LZMA` or `NONE`, in any case. Lossy codecs (`JPEG`, `WEBP`, `LERC`, `LERC_DEFLATE`, `LERC_ZSTD`) are refused with a `ValueError`.
+- `compression_codec`: a lossless codec, `DEFLATE` (default), `LZW`, `ZSTD`, `LZMA` or `NONE`, in any case. Lossy codecs (`JPEG`, `WEBP`, `LERC`, `LERC_DEFLATE`, `LERC_ZSTD`) are refused with a `ValueError`.
 - `blocksize`: the COG block size in pixels, an integer (`int` or a numpy integer) that is a multiple of 16 from 16 to 4096 (default 512). Strings, floats and bools are refused.
 - Keeps the source's CRS, transform, data type, nodata and colour table. It never sets a nodata the source does not have.
 - Builds overviews fresh with the given method; overviews already in the source are not reused. Adds `PREDICTOR=YES` when the source has no colour table.
@@ -44,10 +44,10 @@ if not result.passed:
         print(problem.field, problem.detail)
 ```
 
-`merge_to_cog(tiles, output, overview_resampling, *, compress="DEFLATE", blocksize=512)` returns the output path.
+`merge_to_cog(tiles, output, overview_resampling, *, compression_codec="DEFLATE", blocksize=512)` returns the output path.
 
 - `tiles`: a list or tuple of local paths, GDAL `/vsi...` paths, or URLs (`http(s)`, `ftp`, `s3`, `gs`, `az`, `oss`, `file`). Reading from cloud storage needs that provider's credentials set up for GDAL. A single path instead of a list is refused.
-- `overview_resampling`, `compress` and `blocksize`: as for `to_cog`.
+- `overview_resampling`, `compression_codec` and `blocksize`: as for `to_cog`.
 - Refuses tiles that differ in CRS, pixel size, grid alignment (an origin offset that is not a whole number of pixels), data type, band count or nodata, and tiles that overlap. Also refuses a tile that marks empty pixels with a mask (such as an internal GeoTIFF mask) instead of a nodata value or an alpha band. The error (`TileMismatchError`) names the tile and the field (`mask` for a mask).
 - Places tiles pixel for pixel, never resampled. The output covers the union of the tiles; gaps are filled with the nodata value. When the tiles have no nodata, gaps are filled with 0 and a warning gives the number of pixels filled, since they cannot be told apart from real 0 values. Tiles with an alpha band get no warning: the alpha band is 0 there, so gaps are transparent.
 - Keeps the tiles' CRS, grid, data type and nodata. It never sets a nodata the tiles do not have.
@@ -65,6 +65,6 @@ if not result.passed:
 
 Pixels are verified by these value counts only, which assumes class data. When a band holds more than 100,000 distinct values, the count check is skipped: no problem is added, the other checks still run, and `counts_checked` is false. When a band goes over the limit in only one of the tiles or the output, that is a "pixel counts" problem. A caller that needs the count proof reads `counts_checked` as well as `passed`.
 
-`compare_pixels(tiles, output)` (in `geo_cloudify.cog.verify`) compares every pixel of the output with the tiles, for any data type, in windows. It returns one `pixels` problem per band that differs, with the first differing places. `check_merged_cog` does not run it.
+`check_pixels(tiles, output)` (in `geo_cloudify.cog.verify`) compares every pixel of the output with the tiles, for any data type, in windows. It returns one `pixels` problem per band that differs, with the first differing places. `check_merged_cog` does not run it.
 
 It raises `TileMismatchError` when the tiles do not share one grid, and `ValueError` for complex data or when `tiles` is empty or a single path, instead of returning a problem.

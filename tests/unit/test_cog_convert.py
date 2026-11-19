@@ -125,7 +125,7 @@ def test_overviews_are_built(tmp_path):
 @pytest.mark.parametrize(("compress", "blocksize", "codec"), [("ZSTD", 256, "zstd"), ("lzw", 512, "lzw")])
 def test_given_compress_and_blocksize_reach_the_output(tmp_path, compress, blocksize, codec):
     source = _geotiff(tmp_path / "src" / "r.tif")
-    output = to_cog(source, tmp_path / "out.tif", "nearest", compress=compress, blocksize=blocksize)
+    output = to_cog(source, tmp_path / "out.tif", "nearest", compression_codec=compress, blocksize=blocksize)
     with rasterio.open(output) as out:
         assert out.compression.name.lower() == codec
         assert out.block_shapes[0] == (blocksize, blocksize)
@@ -144,7 +144,7 @@ def test_lossy_codec_is_refused_before_gdal(tmp_path, monkeypatch, compress):
     source = _geotiff(tmp_path / "src" / "r.tif")
     monkeypatch.setattr("rasterio.shutil.copy", lambda *a, **k: pytest.fail("GDAL was called"))
     with pytest.raises(ValueError, match="lossy"):
-        to_cog(source, tmp_path / "out.tif", "nearest", compress=compress)
+        to_cog(source, tmp_path / "out.tif", "nearest", compression_codec=compress)
 
 
 @pytest.mark.parametrize("compress", ["NOPE", "JXL", 5])
@@ -152,7 +152,7 @@ def test_unknown_codec_is_refused_before_gdal(tmp_path, monkeypatch, compress):
     source = _geotiff(tmp_path / "src" / "r.tif")
     monkeypatch.setattr("rasterio.shutil.copy", lambda *a, **k: pytest.fail("GDAL was called"))
     with pytest.raises(ValueError, match="compress"):
-        to_cog(source, tmp_path / "out.tif", "nearest", compress=compress)
+        to_cog(source, tmp_path / "out.tif", "nearest", compression_codec=compress)
 
 
 @pytest.mark.parametrize("blocksize", [0, 8, 100, 8192, "big", True, None, 512.5, 512.0, "512"])

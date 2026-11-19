@@ -13,7 +13,7 @@ from pathlib import Path
 import rasterio
 import rasterio.shutil
 
-from geo_cloudify.cog.merge import OVERVIEW_METHODS, cog_options
+from geo_cloudify.cog.merge import OVERVIEW_METHODS, validate_cog_settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ def to_cog(
     output: str | PathLike,
     overview_resampling: str,
     *,
-    compress: str = "DEFLATE",
+    compression_codec: str = "DEFLATE",
     blocksize: int = 512,
 ) -> Path:
     """Convert one raster to a COG and return the output path.
@@ -39,7 +39,7 @@ def to_cog(
         output: where to write the COG. Its folder is created if missing.
         overview_resampling: "nearest" or "mode" for class data, "average" for
             continuous data. Lower case, nothing else is accepted.
-        compress: a lossless codec: "DEFLATE" (default), "LZW", "ZSTD",
+        compression_codec: a lossless codec: "DEFLATE" (default), "LZW", "ZSTD",
             "LZMA" or "NONE", in any case.
         blocksize: the COG's block size in pixels, an integer (`int` or a
             numpy integer) that is a multiple of 16 from 16 to 4096 (default 512).
@@ -49,7 +49,7 @@ def to_cog(
 
     Raises:
         ValueError: if `overview_resampling` is not one of the allowed values,
-            `compress` is lossy or unknown, or `blocksize` is not allowed.
+            `compression_codec` is lossy or unknown, or `blocksize` is not allowed.
             These are checked before GDAL runs.
         FileExistsError: if the output file already exists.
         rasterio.errors.RasterioError: if GDAL cannot read the source or write
@@ -60,30 +60,30 @@ def to_cog(
         raise ValueError(
             f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
         )
-    codec, blocksize = cog_options(compress, blocksize)
+    codec, blocksize = validate_cog_settings(compression_codec, blocksize)
     output = Path(output)
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    options = {
+    cog_creation_options = {
         "COMPRESS": codec,
         "BLOCKSIZE": blocksize,
         "NUM_THREADS": "ALL_CPUS",
         "OVERVIEW_RESAMPLING": overview_resampling.upper(),
         "OVERVIEWS": "IGNORE_EXISTING",  # the source's own overviews may use another method
     }
-    with rasterio.open(source) as src:
-        has_colour_table = src.colorinterp[0].name == "palette"
+    with rasterio.open(source) as dataset:
+        has_colour_table = dataset.colorinterp[0].name == "palette"
     # Differencing would mix palette indexes, so it is only used without a colour table.
     if not has_colour_table:
-        options["PREDICTOR"] = "YES"
+        cog_creation_options["PREDICTOR"] = "YES"
     logger.info(
-        "converting %s to %s: compress=%s blocksize=%d overview_resampling=%s",
+        "converting %s to %s: compression_codec=%s blocksize=%d overview_resampling=%s",
         source, output, codec, blocksize, overview_resampling,
     )
     try:
-        rasterio.shutil.copy(str(source), str(output), driver="COG", **options)
+        rasterio.shutil.copy(str(source), str(output), driver="COG", **cog_creation_options)
     except Exception:
         output.unlink(missing_ok=True)  # never leave a half-written COG behind
         raise
