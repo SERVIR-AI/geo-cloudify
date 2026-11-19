@@ -40,7 +40,7 @@ from geo_cloudify.cog.merge import (
     TileGrid,
     TileMismatchError,
     check_no_overlap,
-    validate_and_place_tiles,
+    _validate_and_place_tiles,
     nodata_equal,
 )
 
@@ -161,7 +161,7 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
         rasterio.errors.RasterioIOError: if GDAL cannot open a tile or the output.
         rasterio.errors.RasterioError: if GDAL cannot read their pixels.
     """
-    grid, placed = validate_and_place_tiles(tiles)
+    grid, placed = _validate_and_place_tiles(tiles)
     if np.dtype(grid.dtype).kind == "c":
         raise ValueError(f"pixel counts are not supported for complex data ({grid.dtype})")
     problems: list[Problem] = []
@@ -535,7 +535,7 @@ def check_pixels(tiles: Sequence[str | PathLike], output: str | PathLike) -> tup
         rasterio.errors.RasterioIOError: if GDAL cannot open a tile or the output.
         rasterio.errors.RasterioError: if GDAL cannot read their pixels.
     """
-    grid, placed = validate_and_place_tiles(tiles)
+    grid, placed = _validate_and_place_tiles(tiles)
     dtype = np.dtype(grid.dtype)
     if dtype.kind == "c":
         raise ValueError(f"pixel comparison is not supported for complex data ({grid.dtype})")

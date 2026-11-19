@@ -275,10 +275,10 @@ def find_union_grid(tiles: Sequence[str | PathLike]) -> TileGrid:
             "data type", "nodata" or "mask").
         rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
     """
-    return validate_and_place_tiles(tiles)[0]
+    return _validate_and_place_tiles(tiles)[0]
 
 
-def validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_TileHeader, int, int]]]:
+def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_TileHeader, int, int]]]:
     """Run the `find_union_grid` checks and also say where each tile sits on the union grid.
 
     Args:
@@ -498,7 +498,7 @@ def _write_vrt(
     nodata value is written only when the tiles have one.
 
     Args:
-        grid: the union grid from `validate_and_place_tiles`.
+        grid: the union grid from `_validate_and_place_tiles`.
         placed: each tile's header with its column and row on the grid.
         path: where to write the VRT file.
         tags: dataset metadata (default domain) to put on the VRT.
@@ -613,7 +613,7 @@ def _gap_pixel_count(grid: TileGrid, placed: Sequence[tuple[_TileHeader, int, in
     """Return how many pixels of the union grid no tile covers.
 
     Args:
-        grid: the union grid from `validate_and_place_tiles`.
+        grid: the union grid from `_validate_and_place_tiles`.
         placed: each tile's header with its place on the grid; the tiles must
             not overlap (see `check_no_overlap`).
 
@@ -699,7 +699,7 @@ def merge_to_cog(
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
     # The tiles must share one grid and not overlap; the look comes from the first tile.
-    grid, placed = validate_and_place_tiles(tiles)
+    grid, placed = _validate_and_place_tiles(tiles)
     check_no_overlap(placed)
     tags, looks = _read_band_metadata(tiles[0])
 
