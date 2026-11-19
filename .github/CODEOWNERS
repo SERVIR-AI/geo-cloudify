@@ -1,0 +1,8 @@
+# Who reviews changes to each path.
+# The last matching line wins, so list broad paths first and specific paths after.
+# Enforced only when branch protection on main requires review from code owners.
+
+*           @SERVIR-AI/environmental-ai
+/.github/   @biplovbhandari @SERVIR-AI/environmental-ai
+/AGENTS.md  @biplovbhandari @SERVIR-AI/environmental-ai
+/CLAUDE.md  @biplovbhandari @SERVIR-AI/environmental-ai
