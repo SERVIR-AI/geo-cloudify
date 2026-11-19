@@ -559,17 +559,17 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
         compression_codec: a lossless codec the COG driver knows: "DEFLATE", "LZW",
             "ZSTD", "LZMA" or "NONE", in any case.
         blocksize: a whole-number integer type (`int` or a numpy integer such
-            as `np.int64`; not a bool, float or string) that is a multiple of 16
+            as `np.int64`; not a bool, float or string) that is a power of two
             from 16 to 4096.
 
     Returns:
         The codec in upper case and the block size as a plain int.
 
     Raises:
-        ValueError: if `compression_codec` is not a string, is a lossy codec ("JPEG",
+        ValueError: if `compress` is not a string, is a lossy codec ("JPEG",
             "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", in any case) or is not
             a codec the COG driver knows, or `blocksize` is not an integer that
-            is a multiple of 16 from 16 to 4096.
+            is a power of two from 16 to 4096.
     """
     if not isinstance(compression_codec, str):
         raise ValueError(f"compression_codec must be a codec name, got {compression_codec!r}")
@@ -581,7 +581,8 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
     if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
         raise ValueError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
     blocksize = int(blocksize)
-    if not (blocksize % 16 == 0 and 16 <= blocksize <= 4096):
+    # blocksize & (blocksize - 1) is True only if blocksize is a power of 2
+    if not ((blocksize & (blocksize - 1) == 0) and 16 <= blocksize <= 4096):
         raise ValueError(f"BLOCKSIZE must be a multiple of 16 from 16 to 4096, got {blocksize!r}")
     return codec, blocksize
 
