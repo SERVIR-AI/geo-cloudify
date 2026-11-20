@@ -543,7 +543,7 @@ def test_unknown_codec_is_refused_before_writing(tmp_path, compress):
     assert not out_dir.exists()
 
 
-@pytest.mark.parametrize("blocksize", [0, 8, 100, 8192, "big", True, None, 512.5, 512.0, "512"])
+@pytest.mark.parametrize("blocksize", [0, 8, 48, 100, 8192, "big", True, None, 512.5, 512.0, "512"])
 def test_bad_block_size_is_refused_before_writing(tmp_path, blocksize):
     tiles = _random_tiles(tmp_path)
     out_dir = tmp_path / "out"

@@ -583,7 +583,7 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
     blocksize = int(blocksize)
     # blocksize & (blocksize - 1) is True only if blocksize is a power of 2
     if not ((blocksize & (blocksize - 1) == 0) and 16 <= blocksize <= 4096):
-        raise ValueError(f"BLOCKSIZE must be a multiple of 16 from 16 to 4096, got {blocksize!r}")
+        raise ValueError(f"BLOCKSIZE must be a power of two from 16 to 4096, got {blocksize!r}")
     return codec, blocksize
 
 
@@ -672,7 +672,7 @@ def merge_to_cog(
         compression_codec: a lossless codec: "DEFLATE" (default), "LZW", "ZSTD",
             "LZMA" or "NONE", in any case.
         blocksize: the COG's block size in pixels, an integer (`int` or a
-            numpy integer) that is a multiple of 16 from 16 to 4096 (default 512).
+            numpy integer) that is a power of two from 16 to 4096 (default 512).
 
     Returns:
         The output path, as given, as a Path.
