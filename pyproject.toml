@@ -1,26 +1,13 @@
 [project]
-name = "geoconvert"
+name = "geo-cloudify"
 version = "0.1.0"
-description = "Add your description here"
+description = "Convert geospatial files to cloud-optimized formats and check the result"
 readme = "README.md"
 authors = [
     { name = "Arif Syraj", email = "126988341+arif-syr@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "boto3>=1.43.127",
-    "fastapi>=0.162.2",
-    "pydantic>=2.14.3",
-    "pydantic-settings>=2.16.2",
-    "pyyaml>=6.0.3",
-    "uvicorn>=0.54.0",
-]
-
-[project.scripts]
-geoconvert = "geoconvert:main"
-
-[project.optional-dependencies]
-cog = [
     "numpy>=2.5.4",
     "rasterio>=1.5.2",
     "rio-cogeo>=7.0.4",
@@ -32,6 +19,5 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.16.0",
     "pytest>=9.2.0",
 ]

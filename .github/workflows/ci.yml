@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      # --locked fails if uv.lock is out of date with pyproject.toml, so CI uses the same versions as local runs.
+      - name: Install
+        run: uv sync --locked --all-extras
+
+      - name: Run tests
+        run: uv run pytest -q

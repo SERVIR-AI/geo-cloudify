@@ -17,7 +17,7 @@ For each input (a file, a folder, a .zip, or an http(s) URL to any of those):
      every geometry byte-for-byte equal (WKB). Rows are matched through the sort order.
 
 Prints one report line per layer and exits non-zero if any layer fails the check.
-Not production code: a blueprint for the geoconvert GeoParquet step.
+Not production code: a blueprint for the geo_cloudify GeoParquet step.
 """
 
 import argparse
