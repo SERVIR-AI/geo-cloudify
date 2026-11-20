@@ -4,8 +4,8 @@ Converts geospatial files to cloud-optimized formats and checks the result. Rast
 
 ## Install
 
-- With uv: `uv sync --extra cog`.
-- With pip: `pip install "geo-cloudify[cog] @ git+https://github.com/SERVIR-AI/geo-cloudify.git"`.
+- With uv: `uv sync`.
+- With pip: `pip install "geo-cloudify @ git+https://github.com/SERVIR-AI/geo-cloudify.git"`.
 
 The functions below read no config file and no `.env`; their settings are their arguments. Each logs one info line with the settings used, and GDAL uses all CPUs (`NUM_THREADS=ALL_CPUS`).
 

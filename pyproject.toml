@@ -7,10 +7,7 @@ authors = [
     { name = "Arif Syraj", email = "126988341+arif-syr@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
-
-[project.optional-dependencies]
-cog = [
+dependencies = [
     "numpy>=2.5.4",
     "rasterio>=1.5.2",
     "rio-cogeo>=7.0.4",
