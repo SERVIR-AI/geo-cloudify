@@ -368,7 +368,7 @@ def test_gap_fill_past_the_limit_skips_the_count_check(tmp_path):
     assert not check.counts_checked
 
 
-def test_check_merged_cog_does_not_compare_pixels(tiles, merged, monkeypatch):
+def test_check_merged_cog_does_not_check_pixels(tiles, merged, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("check_pixels was called")
 
@@ -377,7 +377,7 @@ def test_check_merged_cog_does_not_compare_pixels(tiles, merged, monkeypatch):
     assert check.passed and check.counts_checked
 
 
-def test_nothing_in_the_package_calls_compare_pixels():
+def test_nothing_in_the_package_calls_check_pixels():
     source = Path(verify.__file__).parents[1]
     callers = [
         path for path in source.rglob("*.py")
@@ -413,12 +413,12 @@ def _pixel_problems(problems) -> list[str]:
     return [str(problem) for problem in problems]
 
 
-def test_compare_pixels_good_merge_has_no_problems(tiles, merged):
+def test_check_pixels_good_merge_has_no_problems(tiles, merged):
     assert check_pixels(tiles, merged) == ()
 
 
 @pytest.mark.parametrize("window_pixels", [None, 4096])
-def test_compare_pixels_finds_a_changed_pixel_and_its_place(tmp_path, monkeypatch, window_pixels):
+def test_check_pixels_finds_a_changed_pixel_and_its_place(tmp_path, monkeypatch, window_pixels):
     if window_pixels:
         # Small windows, so the changed pixel lies in a window that does not start at 0, 0.
         monkeypatch.setattr(verify, "_MAX_WINDOW_PIXELS", window_pixels)
@@ -440,14 +440,14 @@ def test_compare_pixels_finds_a_changed_pixel_and_its_place(tmp_path, monkeypatc
     assert "column 650, row 650: expected 22, found 20" in problems[0]
 
 
-def test_compare_pixels_finds_a_dropped_tile(tmp_path, tiles):
+def test_check_pixels_finds_a_dropped_tile(tmp_path, tiles):
     without_ne = [t for t in tiles if t.name != "ne.tif"]
     output = merge_to_cog(without_ne, tmp_path / "dropped.tif", "mode")
     problems = _pixel_problems(check_pixels(tiles, output))
     assert len(problems) == 1 and "band 1:" in problems[0]
 
 
-def test_compare_pixels_finds_a_gap_that_is_not_fill(tmp_path):
+def test_check_pixels_finds_a_gap_that_is_not_fill(tmp_path):
     tiles = _layout(tmp_path / "tiles", _tile_data(), gap=7)
     filler = _write(tmp_path / "filler.tif", np.full((1, 787, 7), 5, dtype="uint8"), x=X0 + 600 * PIXEL)
     output = merge_to_cog([*tiles, filler], tmp_path / "filled.tif", "mode")
@@ -457,7 +457,7 @@ def test_compare_pixels_finds_a_gap_that_is_not_fill(tmp_path):
     assert "column 600, row 0: expected 0, found 5" in problems[0]
 
 
-def test_compare_pixels_finds_swapped_tiles_that_counts_miss(tmp_path):
+def test_check_pixels_finds_swapped_tiles_that_counts_miss(tmp_path):
     rng = np.random.default_rng(8)
     a = rng.integers(0, 23, size=(1, 300, 300)).astype("uint8")
     b = rng.integers(0, 23, size=(1, 300, 300)).astype("uint8")
@@ -470,7 +470,7 @@ def test_compare_pixels_finds_swapped_tiles_that_counts_miss(tmp_path):
     assert len(_pixel_problems(check_pixels(tiles, output))) == 1
 
 
-def test_compare_pixels_handles_many_distinct_float_values(tmp_path, monkeypatch):
+def test_check_pixels_handles_many_distinct_float_values(tmp_path, monkeypatch):
     rng = np.random.default_rng(9)
     data = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
     tiles = _layout(tmp_path / "tiles", data, gap=3, nodata=None)
@@ -491,7 +491,7 @@ def test_compare_pixels_handles_many_distinct_float_values(tmp_path, monkeypatch
     assert len(check_pixels(changed, output)) == 1
 
 
-def test_compare_pixels_treats_nan_as_equal_to_nan(tmp_path):
+def test_check_pixels_treats_nan_as_equal_to_nan(tmp_path):
     data = _tile_data("float32")
     for array in data.values():
         array[array == 0] = np.nan
@@ -500,7 +500,7 @@ def test_compare_pixels_treats_nan_as_equal_to_nan(tmp_path):
     assert check_pixels(tiles, output) == ()
 
 
-def test_compare_pixels_reads_in_windows(tiles, merged, monkeypatch):
+def test_check_pixels_reads_in_windows(tiles, merged, monkeypatch):
     monkeypatch.setattr(verify, "_MAX_WINDOW_PIXELS", 4096)
     reads = []
     real_read = DatasetReader.read
@@ -518,7 +518,7 @@ def test_compare_pixels_reads_in_windows(tiles, merged, monkeypatch):
     assert all(window.width * window.height <= 512 * 512 for _, _, window in reads)
 
 
-def test_compare_pixels_reports_a_different_grid_without_comparing(tmp_path, tiles):
+def test_check_pixels_reports_a_different_grid_without_comparing(tmp_path, tiles):
     wider = _layout(tmp_path / "wider", _tile_data(), gap=7)
     output = merge_to_cog(wider, tmp_path / "wider.tif", "mode")
     problems = _pixel_problems(check_pixels(tiles, output))
