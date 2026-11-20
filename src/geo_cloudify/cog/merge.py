@@ -581,7 +581,7 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
     if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
         raise ValueError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
     blocksize = int(blocksize)
-    # blocksize & (blocksize - 1) is True only if blocksize is a power of 2
+    # blocksize & (blocksize - 1) is 0 only for 0 and powers of two; the lower bound rules out 0.
     if not ((blocksize & (blocksize - 1) == 0) and 16 <= blocksize <= 4096):
         raise ValueError(f"BLOCKSIZE must be a power of two from 16 to 4096, got {blocksize!r}")
     return codec, blocksize
