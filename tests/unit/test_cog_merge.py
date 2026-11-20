@@ -1,4 +1,4 @@
-"""Unit tests for checking that tiles share one grid (check_tiles) and merging them (merge_to_cog)."""
+"""Unit tests for checking that tiles share one grid (find_union_grid) and merging them (merge_to_cog)."""
 
 import math
 import threading
@@ -16,9 +16,7 @@ from rasterio.transform import Affine, from_origin
 from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
-from geo_cloudify.cog.merge import TileGrid, TileMismatchError, _gdal_path, check_tiles, merge_to_cog
-from geo_cloudify.config import get_config
-from geo_cloudify.settings import get_settings
+from geo_cloudify.cog.merge import TileGrid, TileMismatchError, _gdal_path, find_union_grid, merge_to_cog
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
 X0, Y0, PIXEL = -1260450.0, 3413550.0, 30.0
@@ -51,7 +49,7 @@ def _four_tiles(tmp_path, **last_tile_kwargs):
 
 def test_four_matching_tiles_give_the_union_grid(tmp_path):
     tiles = _four_tiles(tmp_path)
-    grid = check_tiles(tiles)
+    grid = find_union_grid(tiles)
     assert isinstance(grid, TileGrid)
     assert grid.crs == CRS.from_epsg(32648)
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
@@ -61,7 +59,7 @@ def test_four_matching_tiles_give_the_union_grid(tmp_path):
 
 def test_union_starts_at_the_most_north_west_tile_in_any_order(tmp_path):
     tiles = _four_tiles(tmp_path)
-    grid = check_tiles(list(reversed(tiles)))
+    grid = find_union_grid(list(reversed(tiles)))
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (63, 57)
 
@@ -69,7 +67,7 @@ def test_union_starts_at_the_most_north_west_tile_in_any_order(tmp_path):
 def test_union_covers_a_gap_between_tiles(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 15 * PIXEL, y=Y0 - 5 * PIXEL, width=10, height=10)
-    grid = check_tiles([a, b])
+    grid = find_union_grid([a, b])
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (25, 15)
 
@@ -77,13 +75,13 @@ def test_union_covers_a_gap_between_tiles(tmp_path):
 def test_tiny_float_noise_in_origin_is_still_aligned(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL + 1e-7, width=10, height=10)
-    grid = check_tiles([a, b])
+    grid = find_union_grid([a, b])
     assert (grid.width, grid.height) == (20, 10)
 
 
 def test_single_tile_is_accepted(tmp_path):
     tile = _tile(tmp_path / "one.tif", width=23, height=17, nodata=None)
-    grid = check_tiles([str(tile)])
+    grid = find_union_grid([str(tile)])
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height, grid.nodata) == (23, 17, None)
 
@@ -91,14 +89,14 @@ def test_single_tile_is_accepted(tmp_path):
 def test_tiles_without_nodata_give_a_grid_without_nodata(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10, nodata=None)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, nodata=None)
-    assert check_tiles([a, b]).nodata is None
+    assert find_union_grid([a, b]).nodata is None
 
 
 def test_nan_nodata_on_every_tile_matches(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10, dtype="float32", nodata=float("nan"))
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10,
               dtype="float32", nodata=float("nan"))
-    assert math.isnan(check_tiles([a, b]).nodata)
+    assert math.isnan(find_union_grid([a, b]).nodata)
 
 
 # EPSG:32648 written out by hand under another name. GeoTIFF rewrites any CRS to its
@@ -125,7 +123,7 @@ def test_same_crs_written_differently_matches(tmp_path):
     )
     with rasterio.open(a) as src_a, rasterio.open(b) as src_b:
         assert src_a.crs.to_wkt() != src_b.crs.to_wkt()
-    grid = check_tiles([a, b])
+    grid = find_union_grid([a, b])
     assert (grid.width, grid.height) == (20, 10)
 
 
@@ -133,12 +131,12 @@ def test_same_crs_written_differently_matches(tmp_path):
 def test_single_path_instead_of_a_list_is_refused(tmp_path, as_type):
     tile = _tile(tmp_path / "a.tif", width=10, height=10)
     with pytest.raises(ValueError, match="not a single path"):
-        check_tiles(as_type(tile))
+        find_union_grid(as_type(tile))
 
 
 def test_empty_tile_list_is_refused():
     with pytest.raises(ValueError, match="no tiles"):
-        check_tiles([])
+        find_union_grid([])
 
 
 @pytest.mark.parametrize(
@@ -159,7 +157,7 @@ def test_empty_tile_list_is_refused():
 def test_mismatched_tile_is_refused_naming_tile_and_field(tmp_path, change, field):
     tiles = _four_tiles(tmp_path, **change)
     with pytest.raises(TileMismatchError) as caught:
-        check_tiles(tiles)
+        find_union_grid(tiles)
     assert caught.value.tile == str(tiles[3])
     assert caught.value.field == field
     assert "se.tif" in str(caught.value) and field in str(caught.value)
@@ -169,7 +167,7 @@ def test_first_tile_without_nodata_and_second_with_is_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10, nodata=None)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, nodata=0)
     with pytest.raises(TileMismatchError) as caught:
-        check_tiles([a, b])
+        find_union_grid([a, b])
     assert (caught.value.tile, caught.value.field) == (str(b), "nodata")
 
 
@@ -178,14 +176,14 @@ def test_nan_and_number_nodata_are_refused(tmp_path):
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10,
               dtype="float32", nodata=-9999)
     with pytest.raises(TileMismatchError, match="nodata"):
-        check_tiles([a, b])
+        find_union_grid([a, b])
 
 
 def test_tile_without_crs_is_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, crs=None)
     with pytest.raises(TileMismatchError) as caught:
-        check_tiles([a, b])
+        find_union_grid([a, b])
     assert (caught.value.tile, caught.value.field) == (str(b), "crs")
 
 
@@ -193,7 +191,7 @@ def test_rotated_tile_is_refused(tmp_path):
     rotated = Affine(PIXEL, 1.0, X0, 0.0, -PIXEL, Y0)
     tile = _tile(tmp_path / "r.tif", width=10, height=10, transform=rotated)
     with pytest.raises(TileMismatchError) as caught:
-        check_tiles([tile])
+        find_union_grid([tile])
     assert caught.value.field == "orientation"
 
 
@@ -201,10 +199,10 @@ def test_only_headers_are_read(tmp_path, monkeypatch):
     tiles = _four_tiles(tmp_path)
 
     def no_read(*args, **kwargs):
-        raise AssertionError("check_tiles read pixels")
+        raise AssertionError("find_union_grid read pixels")
 
     monkeypatch.setattr(DatasetReader, "read", no_read)
-    check_tiles(tiles)
+    find_union_grid(tiles)
 
 
 # --- merge_to_cog ---------------------------------------------------------------------
@@ -408,29 +406,6 @@ def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     assert output == Path("merged.tif")
 
 
-@pytest.fixture
-def no_config_file(tmp_path, monkeypatch):
-    """Run in a folder with no config.yaml and no GEO_CLOUDIFY_CONFIG, with fresh caches."""
-    folder = tmp_path / "elsewhere"
-    folder.mkdir()
-    monkeypatch.chdir(folder)
-    monkeypatch.delenv("GEO_CLOUDIFY_CONFIG", raising=False)
-    get_settings.cache_clear()
-    get_config.cache_clear()
-    yield folder
-    get_settings.cache_clear()
-    get_config.cache_clear()
-
-
-def test_merge_works_from_a_folder_without_a_config_file(tmp_path, no_config_file):
-    tiles = _random_tiles(tmp_path)
-    output = merge_to_cog(tiles, no_config_file / "merged.tif", "mode")
-    _assert_tiles_placed(output, tiles)
-    with rasterio.open(output) as out:
-        assert out.compression.name == "deflate"
-        assert out.block_shapes[0] == (512, 512)
-
-
 def test_first_tile_colours_and_metadata_are_kept(tmp_path):
     tiles = _random_tiles(tmp_path)
     colormap = {0: (0, 0, 0, 0), 1: (10, 120, 30, 255), 22: (200, 0, 0, 255)}
@@ -520,43 +495,7 @@ def test_real_gmw_tiles_merge(tmp_path):
         assert out.overviews(1)
 
 
-# --- settings: no config file, lossless codecs only -------------------------------------
-
-def _no_config_reads(monkeypatch):
-    """Make any attempt to read config or settings fail the test."""
-    import geo_cloudify.cog.explore as cog_explore
-    import geo_cloudify.config as config_module
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("merge read the config or settings")
-
-    monkeypatch.setattr(cog_explore, "get_config", refuse)
-    monkeypatch.setattr(config_module, "get_config", refuse)
-    monkeypatch.setattr(config_module, "get_settings", refuse)
-
-
-def test_merge_ignores_a_hostile_config_file_and_env(tmp_path, monkeypatch):
-    folder = tmp_path / "catalog"
-    folder.mkdir()
-    (folder / "config.yaml").write_text("cog:\n  compress: JPEG\n  blocksize: 99\n  unknown: 1\n")
-    (folder / "broken.yaml").write_text("cog: [not: valid: yaml\n")
-    (folder / ".env").write_text("GEO_CLOUDIFY_CONFIG=broken.yaml\n")
-    monkeypatch.chdir(folder)
-    monkeypatch.delenv("GEO_CLOUDIFY_CONFIG", raising=False)
-    get_settings.cache_clear()
-    get_config.cache_clear()
-    try:
-        _no_config_reads(monkeypatch)
-        tiles = _random_tiles(tmp_path)
-        output = merge_to_cog(tiles, folder / "merged.tif", "mode")
-    finally:
-        get_settings.cache_clear()
-        get_config.cache_clear()
-    _assert_tiles_placed(output, tiles)
-    with rasterio.open(output) as out:
-        assert out.compression.name == "deflate"
-        assert out.block_shapes[0] == (512, 512)
-
+# --- settings: defaults, lossless codecs only -------------------------------------------
 
 def test_defaults_are_used_and_logged(tmp_path, caplog):
     tiles = _random_tiles(tmp_path)
@@ -575,7 +514,7 @@ def test_given_compress_and_blocksize_reach_the_output(tmp_path, caplog, compres
     tiles = _random_tiles(tmp_path)
     with caplog.at_level("INFO", logger="geo_cloudify.cog.merge"):
         output = merge_to_cog(tiles, tmp_path / "merged.tif", "nearest",
-                              compress=compress, blocksize=blocksize)
+                              compression_codec=compress, blocksize=blocksize)
     _assert_tiles_placed(output, tiles)
     with rasterio.open(output) as out:
         assert out.compression.name == codec
@@ -591,7 +530,7 @@ def test_lossy_codecs_are_refused_before_writing(tmp_path, compress):
     tiles = _random_tiles(tmp_path)
     out_dir = tmp_path / "out"
     with pytest.raises(ValueError, match="(?i)lossy"):
-        merge_to_cog(tiles, out_dir / "merged.tif", "mode", compress=compress)
+        merge_to_cog(tiles, out_dir / "merged.tif", "mode", compression_codec=compress)
     assert not out_dir.exists()
 
 
@@ -600,7 +539,7 @@ def test_unknown_codec_is_refused_before_writing(tmp_path, compress):
     tiles = _random_tiles(tmp_path)
     out_dir = tmp_path / "out"
     with pytest.raises(ValueError, match="(?i)compress"):
-        merge_to_cog(tiles, out_dir / "merged.tif", "mode", compress=compress)
+        merge_to_cog(tiles, out_dir / "merged.tif", "mode", compression_codec=compress)
     assert not out_dir.exists()
 
 
@@ -823,7 +762,7 @@ def test_mask_is_found_without_reading_pixels(tmp_path, monkeypatch):
     monkeypatch.setattr(DatasetReader, "read_masks", no_read)
     monkeypatch.setattr(DatasetReader, "dataset_mask", no_read)
     with pytest.raises(TileMismatchError) as caught:
-        check_tiles([masked])
+        find_union_grid([masked])
     assert caught.value.field == "mask"
 
 

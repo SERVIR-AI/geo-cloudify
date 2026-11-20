@@ -7,20 +7,9 @@ authors = [
     { name = "Arif Syraj", email = "126988341+arif-syr@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
-dependencies = [
-    "pydantic>=2.14.3",
-    "pydantic-settings>=2.16.2",
-    "pyyaml>=6.0.3",
-]
-
-[project.scripts]
-geo-cloudify = "geo_cloudify:main"
+dependencies = []
 
 [project.optional-dependencies]
-api = [
-    "fastapi>=0.162.2",
-    "uvicorn>=0.54.0",
-]
 cog = [
     "numpy>=2.5.4",
     "rasterio>=1.5.2",
@@ -33,6 +22,5 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.16.0",
     "pytest>=9.2.0",
 ]
