@@ -1,1 +1,1 @@
-"""COG format support: convert, merge and verify rasters as Cloud Optimized GeoTIFFs."""
+"""COG format support: merge and verify rasters as Cloud Optimized GeoTIFFs."""

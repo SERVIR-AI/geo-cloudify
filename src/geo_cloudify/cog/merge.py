@@ -566,7 +566,7 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
         The codec in upper case and the block size as a plain int.
 
     Raises:
-        ValueError: if `compress` is not a string, is a lossy codec ("JPEG",
+        ValueError: if `compression_codec` is not a string, is a lossy codec ("JPEG",
             "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", in any case) or is not
             a codec the COG driver knows, or `blocksize` is not an integer that
             is a power of two from 16 to 4096.
