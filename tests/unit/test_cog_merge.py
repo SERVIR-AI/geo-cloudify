@@ -11,12 +11,14 @@ import rasterio.errors
 import rasterio.shutil
 from rasterio.crs import CRS
 from rasterio.io import DatasetReader
-from rasterio.enums import Resampling
+from rasterio.enums import ColorInterp, Resampling
 from rasterio.transform import Affine, from_origin
 from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
-from geo_cloudify.cog.merge import TileGrid, TileMismatchError, _gdal_path, find_union_grid, merge_to_cog
+from geo_cloudify.cog.merge import (
+    GeoCloudifyError, InvalidInputError, TileGrid, TileMismatchError, _gdal_path, find_union_grid, merge_to_cog,
+)
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
 X0, Y0, PIXEL = -1260450.0, 3413550.0, 30.0
@@ -367,14 +369,16 @@ def test_failed_write_leaves_no_file_behind(tmp_path, monkeypatch):
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     real_copy = rasterio.shutil.copy
+    disk_full = rasterio.errors.RasterioIOError("disk full")
 
     def copy_then_fail(src, dst, **kwargs):
         real_copy(src, dst, **kwargs)
-        raise rasterio.errors.RasterioIOError("disk full")
+        raise disk_full
 
     monkeypatch.setattr(rasterio.shutil, "copy", copy_then_fail)
-    with pytest.raises(rasterio.errors.RasterioIOError):
+    with pytest.raises(GeoCloudifyError, match="merged.tif") as caught:
         merge_to_cog(tiles, out_dir / "merged.tif", "mode")
+    assert caught.value.__cause__ is disk_full
     assert list(out_dir.iterdir()) == []
 
 
@@ -406,12 +410,14 @@ def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     assert output == Path("merged.tif")
 
 
-def test_first_tile_colours_and_metadata_are_kept(tmp_path):
+def test_colours_and_first_tile_metadata_are_kept(tmp_path):
     tiles = _random_tiles(tmp_path)
     colormap = {0: (0, 0, 0, 0), 1: (10, 120, 30, 255), 22: (200, 0, 0, 255)}
+    for tile in tiles:
+        with rasterio.open(tile, "r+") as dst:
+            dst.write_colormap(1, colormap)
+            dst.set_band_description(1, "land cover class")
     with rasterio.open(tiles[0], "r+") as dst:
-        dst.write_colormap(1, colormap)
-        dst.set_band_description(1, "land cover class")
         dst.update_tags(SOURCE="test")
         dst.update_tags(1, CLASSES="1-22")
     output = merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
@@ -424,14 +430,36 @@ def test_first_tile_colours_and_metadata_are_kept(tmp_path):
         assert out.tags(1)["CLASSES"] == "1-22"
 
 
-def test_first_tile_scale_and_offset_are_kept(tmp_path):
+def test_scale_offset_and_units_are_kept(tmp_path):
     tiles = _random_tiles(tmp_path)
-    with rasterio.open(tiles[0], "r+") as dst:
-        dst.scales = (0.5,)
-        dst.offsets = (-3.0,)
+    for tile in tiles:
+        with rasterio.open(tile, "r+") as dst:
+            dst.scales = (0.5,)
+            dst.offsets = (-3.0,)
+            dst.units = ("degree Celsius",)
     output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
     with rasterio.open(output) as out:
         assert out.scales == (0.5,) and out.offsets == (-3.0,)
+        assert out.units == ("degree Celsius",)
+
+
+@pytest.mark.parametrize(("field", "change"), [
+    ("scale", lambda dst: setattr(dst, "scales", (0.5,))),
+    ("offset", lambda dst: setattr(dst, "offsets", (-3.0,))),
+    ("units", lambda dst: setattr(dst, "units", ("m",))),
+    ("description", lambda dst: dst.set_band_description(1, "other")),
+    ("colour interpretation", lambda dst: setattr(dst, "colorinterp", [ColorInterp.red])),
+    ("colour table", lambda dst: dst.write_colormap(1, {1: (200, 0, 0, 255)})),
+])
+def test_band_setting_that_differs_is_refused_naming_tile_and_field(tmp_path, field, change):
+    tiles = _random_tiles(tmp_path)
+    with rasterio.open(tiles[3], "r+") as dst:
+        change(dst)
+    with pytest.raises(TileMismatchError) as caught:
+        merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
+    assert (caught.value.tile, caught.value.field) == (str(tiles[3]), field)
+    assert "se.tif" in str(caught.value) and field in str(caught.value)
+    assert not (tmp_path / "merged.tif").exists()
 
 
 @pytest.mark.parametrize("tile, expected", [
@@ -595,16 +623,6 @@ def test_statistics_are_computed_for_the_merged_image_not_copied(tmp_path):
     assert [p.name for p in out_dir.iterdir()] == ["merged.tif"]
 
 
-def test_statistics_leave_out_a_hole_filled_with_zero(tmp_path):
-    nines = np.full((1, 10, 10), 9, dtype="uint8")
-    a = _tile_with(tmp_path / "a.tif", nines, nodata=None)
-    b = _tile_with(tmp_path / "b.tif", nines, x=X0 + 20 * PIXEL, nodata=None)
-    output = merge_to_cog([a, b], tmp_path / "out" / "merged.tif", "nearest")
-    with rasterio.open(output) as out:
-        assert (out.read(1, window=Window(10, 0, 10, 10)) == 0).all()
-        assert float(out.tags(1)["STATISTICS_MINIMUM"]) == 9
-
-
 def _aux_xml(tile, nodata):
     """Write a `<tile>.aux.xml` next to `tile` holding statistics and a nodata value."""
     Path(f"{tile}.aux.xml").write_text(
@@ -677,37 +695,19 @@ def test_nodata_stored_only_in_an_aux_xml_still_reaches_the_output(tmp_path):
 
 # --- holes with no nodata ----------------------------------------------------------------
 
-def _hole_warnings(caplog):
-    return [r.getMessage() for r in caplog.records
-            if r.name == "geo_cloudify.cog.merge" and r.levelname == "WARNING"]
-
-
-def test_hole_without_nodata_is_filled_with_zero_and_warned(tmp_path, caplog):
+def test_hole_without_nodata_is_refused_before_writing(tmp_path):
     tiles = _random_tiles(tmp_path, nodata=None, gap=5)
-    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
-        output = merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
-    with rasterio.open(output) as out:
-        assert out.nodata is None
-        assert (out.read(1, window=Window(600, 0, 5, out.height)) == 0).all()
-    warnings = _hole_warnings(caplog)
-    assert len(warnings) == 1
-    assert "3,935" in warnings[0] and " 0" in warnings[0]
+    out_dir = tmp_path / "out"
+    with pytest.raises(InvalidInputError, match="nodata") as caught:
+        merge_to_cog(tiles, out_dir / "merged.tif", "nearest")
+    assert "3,935 pixels" in str(caught.value)
+    assert not out_dir.exists()
 
 
-def test_hole_count_for_a_missing_corner_tile(tmp_path, caplog):
+def test_hole_count_for_a_missing_corner_tile(tmp_path):
     tiles = _random_tiles(tmp_path, nodata=None)[:3]  # se (257 x 311) left out
-    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
+    with pytest.raises(InvalidInputError, match="79,927 pixels"):
         merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
-    warnings = _hole_warnings(caplog)
-    assert len(warnings) == 1 and "79,927" in warnings[0]
-
-
-@pytest.mark.parametrize(("nodata", "gap"), [(0, 5), (None, 0)])
-def test_no_hole_warning_with_nodata_or_without_a_hole(tmp_path, caplog, nodata, gap):
-    tiles = _random_tiles(tmp_path, nodata=nodata, gap=gap)
-    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
-        merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
-    assert _hole_warnings(caplog) == []
 
 
 # --- tiles with an internal mask ----------------------------------------------------------
@@ -780,11 +780,10 @@ def test_tiles_with_an_alpha_band_are_not_refused_for_a_mask(tmp_path):
     _assert_tiles_placed(output, [a, b])
 
 
-def test_hole_in_alpha_tiles_is_transparent_and_not_warned(tmp_path, caplog):
+def test_hole_in_alpha_tiles_is_refused_before_writing(tmp_path):
     a = _alpha_tile(tmp_path / "a.tif")
     b = _alpha_tile(tmp_path / "b.tif", x=X0 + 25 * PIXEL)
-    with caplog.at_level("WARNING", logger="geo_cloudify.cog.merge"):
-        output = merge_to_cog([a, b], tmp_path / "merged.tif", "nearest")
-    with rasterio.open(output) as out:
-        assert (out.read(4, window=Window(20, 0, 5, 20)) == 0).all()
-    assert _hole_warnings(caplog) == []
+    out_dir = tmp_path / "out"
+    with pytest.raises(InvalidInputError, match="100 pixels"):
+        merge_to_cog([a, b], out_dir / "merged.tif", "nearest")
+    assert not out_dir.exists()
