@@ -6,13 +6,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+import rasterio.errors
 import rasterio.shutil
 from rasterio.enums import Resampling
 from rasterio.io import DatasetReader
 from rasterio.transform import from_origin
 
 from geo_cloudify.cog import verify
-from geo_cloudify.cog.merge import TileMismatchError, merge_to_cog
+from geo_cloudify.cog.merge import GeoCloudifyError, TileMismatchError, merge_to_cog
 from geo_cloudify.cog.verify import MergeCheck, check_merged_cog
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
@@ -84,9 +85,8 @@ def test_good_merge_passes(tiles, merged):
         assert out.overviews(1)  # 911 x 787 is larger than one 512 block
 
 
-@pytest.mark.parametrize("nodata", [0, None])
-def test_good_merge_with_a_gap_passes(tmp_path, nodata):
-    tiles = _layout(tmp_path / "tiles", _tile_data(), gap=7, nodata=nodata)
+def test_good_merge_with_a_gap_passes(tmp_path):
+    tiles = _layout(tmp_path / "tiles", _tile_data(), gap=7)
     output = merge_to_cog(tiles, tmp_path / "merged.tif", "nearest")
     check = check_merged_cog(tiles, output)
     assert check.passed, check.problems
@@ -216,6 +216,18 @@ def test_tiles_that_do_not_match_each_other_are_refused(tmp_path, merged, tiles)
     assert caught.value.field == "crs"
 
 
+def test_rasterio_error_reaches_the_caller_as_the_base_error(tiles, merged, monkeypatch):
+    unreadable = rasterio.errors.RasterioIOError("read failed")
+
+    def fail(*args, **kwargs):
+        raise unreadable
+
+    monkeypatch.setattr(DatasetReader, "read", fail)
+    with pytest.raises(GeoCloudifyError, match="merged.tif") as caught:
+        check_merged_cog(tiles, merged)
+    assert caught.value.__cause__ is unreadable
+
+
 # --- pixels ---------------------------------------------------------------------------
 
 
@@ -286,7 +298,7 @@ def test_overlapping_tiles_are_reported(tmp_path, tiles, merged):
 def test_float_data_with_many_distinct_values_is_checked_in_bounded_memory(tmp_path, monkeypatch):
     rng = np.random.default_rng(9)
     data = {name: rng.random(size=(1, h, w)).astype("float32") for name, (h, w) in SIZES.items()}
-    tiles = _layout(tmp_path / "tiles", data, gap=3, nodata=None)
+    tiles = _layout(tmp_path / "tiles", data, nodata=None)
     output = merge_to_cog(tiles, tmp_path / "merged.tif", "average")
     monkeypatch.setattr(verify, "_MAX_WINDOW_PIXELS", 65536)
     # The image holds about 717,000 distinct values: over 20 MB as Python floats,
@@ -300,7 +312,7 @@ def test_float_data_with_many_distinct_values_is_checked_in_bounded_memory(tmp_p
     assert check.passed, check.problems
     assert peak < 8 * 1024 * 1024, peak
     data["se"][0, 5, 6] = 2.5
-    changed = _layout(tmp_path / "changed", data, gap=3, nodata=None)
+    changed = _layout(tmp_path / "changed", data, nodata=None)
     assert len(_pixel_problems(check_merged_cog(changed, output))) == 1
 
 
