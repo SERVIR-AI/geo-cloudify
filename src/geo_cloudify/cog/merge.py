@@ -1,15 +1,9 @@
 """COG merge: combine tiles that share one grid into one Cloud Optimized GeoTIFF.
 
-`find_union_grid` reads only the tiles' headers and refuses tiles that would be
-changed or misplaced by a merge: a different CRS, pixel size, grid alignment,
-data type, band count or nodata, or an internal mask. When they match, it
-returns the grid that covers all of them.
-
 `merge_to_cog` checks the tiles, refuses overlapping tiles, writes a small VRT
 (a text file that places each tile on the union grid, pixel for pixel) and lets
 GDAL's COG driver write one COG from it. Pixels are copied, never resampled,
-and GDAL reads in blocks, so a whole raster is never held in memory. The merge
-reads no config file and no `.env`: its settings are its arguments.
+and GDAL reads in blocks, so a whole raster is never held in memory.
 """
 
 import logging
@@ -44,16 +38,6 @@ logger = logging.getLogger(__name__)
 ALIGN_TOLERANCE = 1e-6
 # How far (relative) two pixel sizes may differ and still count as equal.
 PIXEL_SIZE_TOLERANCE = 1e-9
-# URL schemes a tile may use, and the GDAL virtual file system prefix each one maps to.
-_VSI_PREFIXES = {
-    "http": "/vsicurl/",
-    "https": "/vsicurl/",
-    "ftp": "/vsicurl/",
-    "s3": "/vsis3/",
-    "gs": "/vsigs/",
-    "az": "/vsiaz/",
-    "oss": "/vsioss/",
-}
 # Errors GDAL and rasterio raise; they reach callers wrapped in `GeoCloudifyError`.
 _GDAL_ERRORS = (rasterio.errors.RasterioError, rasterio.errors.CRSError, CPLE_BaseError)
 
@@ -77,7 +61,7 @@ class TileMismatchError(InvalidInputError):
     """A tile cannot be merged with the others.
 
     Attributes:
-        tile: the tile as the caller gave it (path or URL, as a string).
+        tile: the tile as the caller gave it (a path, as a string).
         field: what differs: "crs", "orientation", "pixel size", "grid alignment",
             "band count", "data type", "nodata", "mask", "overlap", "scale",
             "offset", "units", "description", "colour interpretation" or
@@ -88,7 +72,7 @@ class TileMismatchError(InvalidInputError):
         """Build the error for `tile` and `field`, with `detail` saying how it differs.
 
         Args:
-            tile: the tile as the caller gave it (path or URL).
+            tile: the tile as the caller gave it (a path).
             field: the field that differs (see the class docstring for values).
             detail: a short plain explanation, added to the message.
         """
@@ -125,7 +109,7 @@ class _TileHeader:
     """What `find_union_grid` needs from one tile's header.
 
     Attributes:
-        tile: the tile as the caller gave it (path or URL, as a string).
+        tile: the tile as the caller gave it (a path, as a string).
         crs: the tile's CRS, or None when it has none.
         transform: the tile's affine transform.
         width: width in pixels.
@@ -147,7 +131,7 @@ class _TileHeader:
     has_mask: bool = False
 
 
-def nodata_equal(a: float | None, b: float | None) -> bool:
+def _nodata_equal(a: float | None, b: float | None) -> bool:
     """Return True when two nodata values are equal, treating NaN as equal to NaN.
 
     Args:
@@ -185,7 +169,7 @@ def _read_header(tile: str | PathLike) -> _TileHeader:
     """Open `tile` and return its header. No pixels are read.
 
     Args:
-        tile: a local path or a URL GDAL can open.
+        tile: a local path.
 
     Returns:
         The tile's header.
@@ -235,7 +219,7 @@ def _check_own_header(header: _TileHeader) -> None:
         )
     if len(set(header.dtypes)) > 1:
         raise TileMismatchError(header.tile, "data type", f"bands differ: {header.dtypes}")
-    if any(not nodata_equal(v, header.nodatavals[0]) for v in header.nodatavals):
+    if any(not _nodata_equal(v, header.nodatavals[0]) for v in header.nodatavals):
         raise TileMismatchError(header.tile, "nodata", f"bands differ: {header.nodatavals}")
     if header.has_mask:
         raise TileMismatchError(
@@ -284,7 +268,7 @@ def find_union_grid(tiles: Sequence[str | PathLike]) -> TileGrid:
     checked here.
 
     Args:
-        tiles: a list or tuple of one or more local paths or URLs GDAL can open.
+        tiles: a list or tuple of one or more local paths.
             A single path given as a bare string or path object is refused.
 
     Returns:
@@ -306,7 +290,7 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
     """Run the `find_union_grid` checks and also say where each tile sits on the union grid.
 
     Args:
-        tiles: a list or tuple of one or more local paths or URLs GDAL can open.
+        tiles: a list or tuple of one or more local paths.
 
     Returns:
         The union grid, and for each tile in the order given: its header and the
@@ -343,7 +327,7 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
             raise TileMismatchError(
                 header.tile, "data type", f"{header.dtypes[0]} vs {ref.dtypes[0]} in {ref.tile}"
             )
-        if not nodata_equal(header.nodatavals[0], ref.nodatavals[0]):
+        if not _nodata_equal(header.nodatavals[0], ref.nodatavals[0]):
             raise TileMismatchError(
                 header.tile, "nodata", f"{header.nodatavals[0]} vs {ref.nodatavals[0]} in {ref.tile}"
             )
@@ -372,7 +356,7 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
     return grid, [(header, col - left, row - top) for (col, row), header in zip(offsets_from_ref, headers)]
 
 
-def check_no_overlap(placed: Sequence[tuple[_TileHeader, int, int]]) -> None:
+def _check_no_overlap(placed: Sequence[tuple[_TileHeader, int, int]]) -> None:
     """Refuse tiles whose pixels would land on the same place in the union grid.
 
     Args:
@@ -390,40 +374,6 @@ def check_no_overlap(placed: Sequence[tuple[_TileHeader, int, int]]) -> None:
             if (col < other_col + other.width and other_col < col + header.width
                     and row < other_row + other.height and other_row < row + header.height):
                 raise TileMismatchError(header.tile, "overlap", f"its pixels overlap {other.tile}")
-
-
-def _gdal_path(tile: str) -> str:
-    """Return the name GDAL needs to open `tile` from a VRT in another folder.
-
-    Args:
-        tile: a local path (absolute or relative to the current folder), a
-            "file://" URL, a GDAL path such as "/vsicurl/...", or a URL with
-            scheme "http", "https", "ftp", "s3", "gs", "az" or "oss".
-
-    Returns:
-        An absolute local path, the GDAL path unchanged, or the URL as a GDAL
-        virtual file path (for example "s3://b/k.tif" gives "/vsis3/b/k.tif").
-
-    Raises:
-        InvalidInputError: if `tile` is a URL with any other scheme.
-    """
-    # Already a GDAL virtual path.
-    if tile.startswith("/vsi"):
-        return tile
-    # Split "scheme://rest"; `sep` is empty when there is no scheme (a plain local path).
-    scheme, sep, rest = tile.partition("://")
-    if not sep:
-        return os.path.abspath(tile)
-    scheme = scheme.lower()
-    if scheme == "file":
-        return os.path.abspath(rest)
-    # "/vsicurl/" takes the whole URL; the other prefixes take the part after "://".
-    if scheme in _VSI_PREFIXES:
-        return _VSI_PREFIXES[scheme] + (tile if _VSI_PREFIXES[scheme] == "/vsicurl/" else rest)
-    raise InvalidInputError(
-        f"tile {tile}: URL scheme {scheme!r} is not supported; use one of "
-        f"{', '.join(sorted(_VSI_PREFIXES))}, a local path or a /vsi path"
-    )
 
 
 @dataclass(frozen=True)
@@ -469,7 +419,7 @@ def _read_band_metadata(tile: str | PathLike) -> tuple[dict[str, str], list[_Ban
     `STATISTICS_*` tags are left out at dataset and band level. No pixels are read.
 
     Args:
-        tile: a local path or a URL GDAL can open.
+        tile: a local path.
 
     Returns:
         The dataset metadata in the default domain, and one `_BandMetadata` per band.
@@ -507,8 +457,7 @@ def _check_band_settings(tiles: Sequence[str | PathLike]) -> tuple[dict[str, str
     compared. No pixels are read.
 
     Args:
-        tiles: a list or tuple of one or more local paths or URLs GDAL can open,
-            with the same band count.
+        tiles: a list or tuple of one or more local paths, with the same band count.
 
     Returns:
         The first tile's dataset metadata and band metadata, as `_read_band_metadata`.
@@ -609,7 +558,7 @@ def _write_vrt(
         # (DstRect) at the same size, so nothing is resampled.
         for header, col, row in placed:
             source_element = ET.SubElement(band_element, "SimpleSource")
-            ET.SubElement(source_element, "SourceFilename", relativeToVRT="0").text = _gdal_path(header.tile)
+            ET.SubElement(source_element, "SourceFilename", relativeToVRT="0").text = os.path.abspath(header.tile)
             ET.SubElement(source_element, "SourceBand").text = str(band)
             size = {"xSize": str(header.width), "ySize": str(header.height)}
             ET.SubElement(source_element, "SrcRect", xOff="0", yOff="0", **size)
@@ -688,7 +637,7 @@ def _gap_pixel_count(grid: TileGrid, placed: Sequence[tuple[_TileHeader, int, in
     Args:
         grid: the union grid from `_validate_and_place_tiles`.
         placed: each tile's header with its place on the grid; the tiles must
-            not overlap (see `check_no_overlap`).
+            not overlap (see `_check_no_overlap`).
 
     Returns:
         The number of uncovered pixels in one band (0 when the tiles fill the grid).
@@ -736,7 +685,7 @@ def merge_to_cog(
       files.
 
     Args:
-        tiles: a list or tuple of one or more local paths or URLs GDAL can open.
+        tiles: a list or tuple of one or more local paths.
         output: where to write the COG. Its folder is created if missing.
         overview_resampling: "nearest" or "mode" for class data, "average" for
             continuous data. Lower case, nothing else is accepted.
@@ -751,8 +700,7 @@ def merge_to_cog(
     Raises:
         InvalidInputError: if `overview_resampling` is not one of the allowed values,
             `compression_codec` is lossy or unknown, `blocksize` is not allowed,
-            `tiles` is empty or a single path instead of a list, a tile is a
-            URL whose scheme is not supported (see `_gdal_path`), or the tiles
+            `tiles` is empty or a single path instead of a list, or the tiles
             leave places uncovered and have no nodata (the message gives the
             number of uncovered pixels). Nothing is written.
         OutputExistsError: if `output` already exists. It is left untouched.
@@ -777,7 +725,7 @@ def merge_to_cog(
     # The tiles must share one grid, not overlap and share band settings; the look
     # comes from the first tile.
     grid, placed = _validate_and_place_tiles(tiles)
-    check_no_overlap(placed)
+    _check_no_overlap(placed)
     tags, looks = _check_band_settings(tiles)
     # Without a nodata, a gap would need a fill value that could be a real value.
     gap_pixels = _gap_pixel_count(grid, placed)
