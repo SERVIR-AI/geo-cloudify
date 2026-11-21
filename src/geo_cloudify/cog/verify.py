@@ -1,15 +1,5 @@
 """COG verification: check that a merged COG is a faithful copy of its tiles.
 
-`check_merged_cog` runs these checks on the output of `merge_to_cog` and returns
-every problem it finds, not only the first:
-
-- it is a valid COG (`rio_cogeo.cog_validate`; errors and warnings both count);
-- it has overviews down to one block, or none when it fits in one block;
-- its CRS, transform, size, band count, data type and nodata match the tiles;
-- no two tiles overlap;
-- every full-resolution pixel equals what the tiles hold at that place, or the
-  fill value in gaps between tiles. This catches dropped, swapped or changed pixels.
-
 Pixels are read in block-aligned windows, so a whole raster is never held in memory.
 """
 
@@ -34,10 +24,10 @@ from geo_cloudify.cog.merge import (
     InvalidInputError,
     TileGrid,
     TileMismatchError,
-    check_no_overlap,
+    _check_no_overlap,
     _TileHeader,
     _validate_and_place_tiles,
-    nodata_equal,
+    _nodata_equal,
 )
 
 # About how many pixels one read may hold. Windows are rounded to whole blocks.
@@ -111,8 +101,8 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
     problem says "not compared" and why.
 
     Args:
-        tiles: a list or tuple of one or more local paths or URLs GDAL can open:
-            the tiles the output was merged from.
+        tiles: a list or tuple of one or more local paths: the tiles the output
+            was merged from.
         output: a local path or URL of the merged COG.
 
     Returns:
@@ -140,7 +130,7 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
             # Overlapping tiles are reported as a problem here, not raised. With an
             # overlap there is no one expected value, so pixels are not compared.
             try:
-                check_no_overlap(placed)
+                _check_no_overlap(placed)
             except TileMismatchError as error:
                 problems.append(Problem("overlap", str(error)))
                 problems.append(Problem("pixels", "not compared: tiles overlap"))
@@ -254,7 +244,7 @@ def _check_grid(output_dataset: DatasetReader, grid: TileGrid) -> list[Problem]:
         problems.append(Problem("band count", f"output {output_dataset.count}, tiles {grid.count}"))
     if set(output_dataset.dtypes) != {grid.dtype}:
         problems.append(Problem("data type", f"output {output_dataset.dtypes}, tiles {grid.dtype}"))
-    if any(not nodata_equal(v, grid.nodata) for v in output_dataset.nodatavals):
+    if any(not _nodata_equal(v, grid.nodata) for v in output_dataset.nodatavals):
         problems.append(Problem("nodata", f"output {output_dataset.nodatavals}, tiles {grid.nodata}"))
     return problems
 
