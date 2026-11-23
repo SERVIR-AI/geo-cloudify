@@ -331,12 +331,12 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGri
     # offsets, right and bottom are the largest tile edges.
     left = min(col for col, _ in offsets_from_ref)
     top = min(row for _, row in offsets_from_ref)
-    right = max(col + header.width for (col, _), header in zip(offsets_from_ref, headers))
-    bottom = max(row + header.height for (_, row), header in zip(offsets_from_ref, headers))
+    right = max(col + header.width for (col, _), header in zip(offsets_from_ref, headers, strict=True))
+    bottom = max(row + header.height for (_, row), header in zip(offsets_from_ref, headers, strict=True))
     # Take the origin from the westmost and northmost tiles' own headers, not from
     # the reference plus a pixel count, so float error does not move it.
-    westmost_header = next(header for (col, _), header in zip(offsets_from_ref, headers) if col == left)
-    northmost_header = next(header for (_, row), header in zip(offsets_from_ref, headers) if row == top)
+    westmost_header = next(header for (col, _), header in zip(offsets_from_ref, headers, strict=True) if col == left)
+    northmost_header = next(header for (_, row), header in zip(offsets_from_ref, headers, strict=True) if row == top)
     grid = _TileGrid(
         crs=ref.crs,
         transform=Affine(ref.transform.a, 0.0, westmost_header.transform.c, 0.0, ref.transform.e, northmost_header.transform.f),
@@ -347,7 +347,7 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGri
         nodata=ref.nodatavals[0],
     )
     # Offsets are given from the union's top-left corner.
-    return grid, [(header, col - left, row - top) for (col, row), header in zip(offsets_from_ref, headers)]
+    return grid, [(header, col - left, row - top) for (col, row), header in zip(offsets_from_ref, headers, strict=True)]
 
 
 def _check_no_overlap(placed: Sequence[tuple[_TileHeader, int, int]]) -> None:
@@ -465,7 +465,7 @@ def _check_band_settings(tiles: Sequence[str | PathLike]) -> tuple[dict[str, str
     tags, looks = _read_band_metadata(tiles[0])
     for tile in tiles[1:]:
         _, tile_looks = _read_band_metadata(tile)
-        for band, (look, ref) in enumerate(zip(tile_looks, looks), start=1):
+        for band, (look, ref) in enumerate(zip(tile_looks, looks, strict=True), start=1):
             for field, value, ref_value in (
                 ("scale", look.scale, ref.scale),
                 ("offset", look.offset, ref.offset),
@@ -528,7 +528,7 @@ def _write_vrt(
     _add_metadata(root, tags)
     data_type = rasterio.dtypes.typename_fwd[rasterio.dtypes.dtype_rev[grid.dtype]]
     # One band at a time, with the look and metadata copied from the first tile.
-    for band, look in zip(range(1, grid.count + 1), looks):
+    for band, look in zip(range(1, grid.count + 1), looks, strict=True):
         band_element = ET.SubElement(root, "VRTRasterBand", dataType=data_type, band=str(band))
         _add_metadata(band_element, look.tags)
         if look.description:
