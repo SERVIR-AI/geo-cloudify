@@ -28,7 +28,10 @@ from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import (
     ALIGN_TOLERANCE,
+    _GDAL_ERRORS,
     PIXEL_SIZE_TOLERANCE,
+    GeoCloudifyError,
+    InvalidInputError,
     TileGrid,
     TileMismatchError,
     check_no_overlap,
@@ -118,30 +121,33 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
         that differs, with how many pixels differ and the first few places.
 
     Raises:
-        ValueError: if `tiles` is empty or a single path instead of a list, or
+        InvalidInputError: if `tiles` is empty or a single path instead of a list, or
             the tiles hold complex numbers (the pixel comparison does not support them).
         TileMismatchError: if the tiles do not share one grid (see `find_union_grid`).
-        rasterio.errors.RasterioIOError: if GDAL cannot open a tile or the output.
-        rasterio.errors.RasterioError: if GDAL cannot read their pixels.
+        GeoCloudifyError: if GDAL cannot open or read a tile or the output, with
+            the GDAL or rasterio error as its cause.
     """
     grid, placed = _validate_and_place_tiles(tiles)
     if np.dtype(grid.dtype).kind == "c":
-        raise ValueError(f"pixel comparison is not supported for complex data ({grid.dtype})")
+        raise InvalidInputError(f"pixel comparison is not supported for complex data ({grid.dtype})")
     problems: list[Problem] = []
-    with rasterio.open(output) as output_dataset:
-        # Checks on the output file itself: COG validity, overviews and grid fields.
-        problems += _check_cog_validity(output)
-        problems += _check_overviews(output_dataset, output)
-        problems += _check_grid(output_dataset, grid)
-        # Overlapping tiles are reported as a problem here, not raised. With an
-        # overlap there is no one expected value, so pixels are not compared.
-        try:
-            check_no_overlap(placed)
-        except TileMismatchError as error:
-            problems.append(Problem("overlap", str(error)))
-            problems.append(Problem("pixels", "not compared: tiles overlap"))
-        else:
-            problems += _check_pixels(placed, grid, output_dataset)
+    try:
+        with rasterio.open(output) as output_dataset:
+            # Checks on the output file itself: COG validity, overviews and grid fields.
+            problems += _check_cog_validity(output)
+            problems += _check_overviews(output_dataset, output)
+            problems += _check_grid(output_dataset, grid)
+            # Overlapping tiles are reported as a problem here, not raised. With an
+            # overlap there is no one expected value, so pixels are not compared.
+            try:
+                check_no_overlap(placed)
+            except TileMismatchError as error:
+                problems.append(Problem("overlap", str(error)))
+                problems.append(Problem("pixels", "not compared: tiles overlap"))
+            else:
+                problems += _check_pixels(placed, grid, output_dataset)
+    except _GDAL_ERRORS as error:
+        raise GeoCloudifyError(f"output {output}: cannot check against its tiles: {error}") from error
     return MergeCheck(output=output, problems=tuple(problems))
 
 

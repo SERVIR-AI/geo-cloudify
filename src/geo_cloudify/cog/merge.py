@@ -27,6 +27,8 @@ from pathlib import Path
 import rasterio
 import rasterio.dtypes
 import rasterio.shutil
+import rasterio.errors
+from rasterio._err import CPLE_BaseError
 from rasterio.crs import CRS
 from rasterio.enums import MaskFlags
 from rasterio.transform import Affine
@@ -52,15 +54,34 @@ _VSI_PREFIXES = {
     "az": "/vsiaz/",
     "oss": "/vsioss/",
 }
+# Errors GDAL and rasterio raise; they reach callers wrapped in `GeoCloudifyError`.
+_GDAL_ERRORS = (rasterio.errors.RasterioError, rasterio.errors.CRSError, CPLE_BaseError)
 
 
-class TileMismatchError(ValueError):
+class GeoCloudifyError(Exception):
+    """The base of every error this package raises, so a caller can catch one type.
+
+    It is raised itself when GDAL or rasterio fails; the original error is its cause.
+    """
+
+
+class InvalidInputError(GeoCloudifyError, ValueError):
+    """An argument or input the package refuses. It is also a `ValueError`."""
+
+
+class OutputExistsError(GeoCloudifyError, FileExistsError):
+    """The output already exists. It is also a `FileExistsError`."""
+
+
+class TileMismatchError(InvalidInputError):
     """A tile cannot be merged with the others.
 
     Attributes:
         tile: the tile as the caller gave it (path or URL, as a string).
         field: what differs: "crs", "orientation", "pixel size", "grid alignment",
-            "band count", "data type", "nodata", "mask" or "overlap".
+            "band count", "data type", "nodata", "mask", "overlap", "scale",
+            "offset", "units", "description", "colour interpretation" or
+            "colour table".
     """
 
     def __init__(self, tile: str, field: str, detail: str) -> None:
@@ -170,19 +191,22 @@ def _read_header(tile: str | PathLike) -> _TileHeader:
         The tile's header.
 
     Raises:
-        rasterio.errors.RasterioIOError: if GDAL cannot open the tile.
+        GeoCloudifyError: if GDAL cannot open the tile, with the GDAL error as its cause.
     """
-    with rasterio.open(tile) as dataset:
-        return _TileHeader(
-            tile=str(tile),
-            crs=dataset.crs,
-            transform=dataset.transform,
-            width=dataset.width,
-            height=dataset.height,
-            dtypes=tuple(dataset.dtypes),
-            nodatavals=tuple(dataset.nodatavals),
-            has_mask=any(_has_unsupported_mask(flags) for flags in dataset.mask_flag_enums),
-        )
+    try:
+        with rasterio.open(tile) as dataset:
+            return _TileHeader(
+                tile=str(tile),
+                crs=dataset.crs,
+                transform=dataset.transform,
+                width=dataset.width,
+                height=dataset.height,
+                dtypes=tuple(dataset.dtypes),
+                nodatavals=tuple(dataset.nodatavals),
+                has_mask=any(_has_unsupported_mask(flags) for flags in dataset.mask_flag_enums),
+            )
+    except _GDAL_ERRORS as error:
+        raise GeoCloudifyError(f"tile {tile}: cannot read the header: {error}") from error
 
 
 def _check_own_header(header: _TileHeader) -> None:
@@ -268,12 +292,12 @@ def find_union_grid(tiles: Sequence[str | PathLike]) -> TileGrid:
         transform, width and height that cover every tile.
 
     Raises:
-        ValueError: if `tiles` is empty, or is a single string or path object
+        InvalidInputError: if `tiles` is empty, or is a single string or path object
             instead of a sequence of them.
         TileMismatchError: naming the first tile that differs and the field
             ("crs", "orientation", "pixel size", "grid alignment", "band count",
             "data type", "nodata" or "mask").
-        rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
+        GeoCloudifyError: if GDAL cannot open a tile, with the GDAL error as its cause.
     """
     return _validate_and_place_tiles(tiles)[0]
 
@@ -289,14 +313,14 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
         column and row of its top-left pixel on the union grid (0 or more).
 
     Raises:
-        ValueError: as `find_union_grid`.
+        InvalidInputError: as `find_union_grid`.
         TileMismatchError: as `find_union_grid`.
-        rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
+        GeoCloudifyError: if GDAL cannot open a tile.
     """
     if isinstance(tiles, (str, bytes, PathLike)):
-        raise ValueError(f"tiles must be a list of paths, not a single path: {tiles!r}")
+        raise InvalidInputError(f"tiles must be a list of paths, not a single path: {tiles!r}")
     if not tiles:
-        raise ValueError("no tiles given")
+        raise InvalidInputError("no tiles given")
     headers = [_read_header(tile) for tile in tiles]
     ref = headers[0]
     offsets_from_ref = []
@@ -381,7 +405,7 @@ def _gdal_path(tile: str) -> str:
         virtual file path (for example "s3://b/k.tif" gives "/vsis3/b/k.tif").
 
     Raises:
-        ValueError: if `tile` is a URL with any other scheme.
+        InvalidInputError: if `tile` is a URL with any other scheme.
     """
     # Already a GDAL virtual path.
     if tile.startswith("/vsi"):
@@ -396,7 +420,7 @@ def _gdal_path(tile: str) -> str:
     # "/vsicurl/" takes the whole URL; the other prefixes take the part after "://".
     if scheme in _VSI_PREFIXES:
         return _VSI_PREFIXES[scheme] + (tile if _VSI_PREFIXES[scheme] == "/vsicurl/" else rest)
-    raise ValueError(
+    raise InvalidInputError(
         f"tile {tile}: URL scheme {scheme!r} is not supported; use one of "
         f"{', '.join(sorted(_VSI_PREFIXES))}, a local path or a /vsi path"
     )
@@ -412,6 +436,7 @@ class _BandMetadata:
         description: the band description, or "" when it has none.
         scale: the band's scale (1.0 when unset).
         offset: the band's offset (0.0 when unset).
+        units: the band's units, or "" when it has none.
         tags: the band's metadata in the default domain, without `STATISTICS_*` tags.
     """
 
@@ -420,6 +445,7 @@ class _BandMetadata:
     description: str
     scale: float
     offset: float
+    units: str
     tags: dict[str, str]
 
 
@@ -449,24 +475,68 @@ def _read_band_metadata(tile: str | PathLike) -> tuple[dict[str, str], list[_Ban
         The dataset metadata in the default domain, and one `_BandMetadata` per band.
 
     Raises:
-        rasterio.errors.RasterioIOError: if GDAL cannot open the tile.
+        GeoCloudifyError: if GDAL cannot open the tile, with the GDAL error as its cause.
     """
-    with rasterio.open(tile) as dataset:
-        bands = []
-        for band in range(1, dataset.count + 1):
-            try:
-                colormap = dataset.colormap(band)
-            except ValueError:  # rasterio raises this when the band has no colour table
-                colormap = None
-            bands.append(_BandMetadata(
-                color_interp=dataset.colorinterp[band - 1].name.capitalize(),
-                colormap=colormap,
-                description=dataset.descriptions[band - 1] or "",
-                scale=dataset.scales[band - 1],
-                offset=dataset.offsets[band - 1],
-                tags=_without_statistics(dataset.tags(band)),
-            ))
-        return _without_statistics(dataset.tags()), bands
+    try:
+        with rasterio.open(tile) as dataset:
+            bands = []
+            for band in range(1, dataset.count + 1):
+                try:
+                    colormap = dataset.colormap(band)
+                except ValueError:  # rasterio raises this when the band has no colour table
+                    colormap = None
+                bands.append(_BandMetadata(
+                    color_interp=dataset.colorinterp[band - 1].name.capitalize(),
+                    colormap=colormap,
+                    description=dataset.descriptions[band - 1] or "",
+                    scale=dataset.scales[band - 1],
+                    offset=dataset.offsets[band - 1],
+                    units=dataset.units[band - 1] or "",
+                    tags=_without_statistics(dataset.tags(band)),
+                ))
+            return _without_statistics(dataset.tags()), bands
+    except _GDAL_ERRORS as error:
+        raise GeoCloudifyError(f"tile {tile}: cannot read the band settings: {error}") from error
+
+
+def _check_band_settings(tiles: Sequence[str | PathLike]) -> tuple[dict[str, str], list[_BandMetadata]]:
+    """Refuse tiles whose band settings differ from the first tile's, and return the first tile's.
+
+    Every tile must match the first tile in each band's scale, offset, units,
+    description, colour interpretation and colour table. Metadata tags are not
+    compared. No pixels are read.
+
+    Args:
+        tiles: a list or tuple of one or more local paths or URLs GDAL can open,
+            with the same band count.
+
+    Returns:
+        The first tile's dataset metadata and band metadata, as `_read_band_metadata`.
+
+    Raises:
+        TileMismatchError: naming the first tile that differs and the field
+            ("scale", "offset", "units", "description", "colour interpretation"
+            or "colour table").
+        GeoCloudifyError: if GDAL cannot open a tile.
+    """
+    tags, looks = _read_band_metadata(tiles[0])
+    for tile in tiles[1:]:
+        _, tile_looks = _read_band_metadata(tile)
+        for band, (look, ref) in enumerate(zip(tile_looks, looks), start=1):
+            for field, value, ref_value in (
+                ("scale", look.scale, ref.scale),
+                ("offset", look.offset, ref.offset),
+                ("units", look.units, ref.units),
+                ("description", look.description, ref.description),
+                # Before colour interpretation: a band with a colour table is "Palette".
+                ("colour table", look.colormap, ref.colormap),
+                ("colour interpretation", look.color_interp, ref.color_interp),
+            ):
+                if value != ref_value:
+                    # A colour table can hold 256 entries, too many for a message.
+                    shown = "not the same as" if field == "colour table" else f"{value!r} vs {ref_value!r}"
+                    raise TileMismatchError(str(tile), field, f"band {band}: {shown} in {tiles[0]}")
+    return tags, looks
 
 
 def _add_metadata(parent: ET.Element, tags: dict[str, str]) -> None:
@@ -503,7 +573,7 @@ def _write_vrt(
         path: where to write the VRT file.
         tags: dataset metadata (default domain) to put on the VRT.
         looks: one `_BandMetadata` per band: colour interpretation, colour table,
-            description, scale, offset and band metadata to put on that band.
+            description, scale, offset, units and band metadata to put on that band.
 
     Raises:
         OSError: if the file cannot be written.
@@ -533,6 +603,8 @@ def _write_vrt(
             ET.SubElement(band_element, "Offset").text = repr(float(look.offset))
         if look.scale != 1.0:
             ET.SubElement(band_element, "Scale").text = repr(float(look.scale))
+        if look.units:
+            ET.SubElement(band_element, "UnitType").text = look.units
         # One source per tile: read the whole tile (SrcRect) and place it at its offset
         # (DstRect) at the same size, so nothing is resampled.
         for header, col, row in placed:
@@ -566,24 +638,24 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
         The codec in upper case and the block size as a plain int.
 
     Raises:
-        ValueError: if `compression_codec` is not a string, is a lossy codec ("JPEG",
+        InvalidInputError: if `compression_codec` is not a string, is a lossy codec ("JPEG",
             "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", in any case) or is not
             a codec the COG driver knows, or `blocksize` is not an integer that
             is a power of two from 16 to 4096.
     """
     if not isinstance(compression_codec, str):
-        raise ValueError(f"compression_codec must be a codec name, got {compression_codec!r}")
+        raise InvalidInputError(f"compression_codec must be a codec name, got {compression_codec!r}")
     codec = compression_codec.upper()
     if codec in LOSSY_CODECS:
-        raise ValueError(f"compression_codec {compression_codec!r} is lossy; use one of DEFLATE, LZW, ZSTD, LZMA or NONE")
+        raise InvalidInputError(f"compression_codec {compression_codec!r} is lossy; use one of DEFLATE, LZW, ZSTD, LZMA or NONE")
     if codec not in COG_COMPRESSION_CODECS:
-        raise ValueError(f"compression_codec must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compression_codec!r}")
+        raise InvalidInputError(f"compression_codec must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compression_codec!r}")
     if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
-        raise ValueError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
+        raise InvalidInputError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
     blocksize = int(blocksize)
     # blocksize & (blocksize - 1) is 0 only for 0 and powers of two; the lower bound rules out 0.
     if not ((blocksize & (blocksize - 1) == 0) and 16 <= blocksize <= 4096):
-        raise ValueError(f"BLOCKSIZE must be a power of two from 16 to 4096, got {blocksize!r}")
+        raise InvalidInputError(f"BLOCKSIZE must be a power of two from 16 to 4096, got {blocksize!r}")
     return codec, blocksize
 
 
@@ -637,21 +709,20 @@ def merge_to_cog(
     The output:
     - keeps the tiles' CRS, pixel grid, data type, band count and nodata (none if
       the tiles have none), and covers the union of the tiles;
-    - has places no tile covers filled with nodata. When the tiles have no nodata
-      they are filled with 0 and, unless the first tile has an alpha band (which
-      is also 0 there, so those places are transparent), a warning is logged with
-      the number of such pixels, since they cannot be told apart from real 0 values;
+    - has places no tile covers filled with nodata. When the tiles have no nodata,
+      such places are refused (even with an alpha band), since any fill could be
+      a real value;
     - holds copied pixels, never resampled;
     - is tiled with `blocksize` and compressed with `compression_codec`;
     - has overviews built fresh with `overview_resampling`; overviews already
       inside the tiles are not reused;
     - has band statistics (`STATISTICS_*` tags) computed by GDAL from the tiles'
       pixels; those stored in the tiles are not copied. Places no tile covers
-      count as not valid when the tiles have a nodata, and are left out when they
-      do not (0 fill is not in the minimum, mean or valid percent);
-    - gets colour interpretation, colour table, band descriptions, scale, offset
-      and other metadata (default domain) from the first tile; the other tiles'
-      values for these are not compared.
+      count as not valid;
+    - gets colour interpretation, colour table, band descriptions, scale, offset,
+      units and other metadata (default domain) from the first tile. Every tile
+      must match the first in each band's scale, offset, units, description,
+      colour interpretation and colour table; metadata tags are not compared.
 
     How it runs:
     - GDAL does not save statistics or other `.aux.xml` files next to the tiles,
@@ -678,31 +749,43 @@ def merge_to_cog(
         The output path, as given, as a Path.
 
     Raises:
-        ValueError: if `overview_resampling` is not one of the allowed values,
+        InvalidInputError: if `overview_resampling` is not one of the allowed values,
             `compression_codec` is lossy or unknown, `blocksize` is not allowed,
-            `tiles` is empty or a single path instead of a list, or a tile is a
-            URL whose scheme is not supported (see `_gdal_path`). Nothing is
-            written.
-        FileExistsError: if `output` already exists. It is left untouched.
+            `tiles` is empty or a single path instead of a list, a tile is a
+            URL whose scheme is not supported (see `_gdal_path`), or the tiles
+            leave places uncovered and have no nodata (the message gives the
+            number of uncovered pixels). Nothing is written.
+        OutputExistsError: if `output` already exists. It is left untouched.
         TileMismatchError: naming the tile and the field when tiles differ (see
-            `find_union_grid`), a tile has a mask (field "mask") or two tiles
-            overlap (field "overlap").
-        rasterio.errors.RasterioError: if GDAL cannot read a tile or write the output.
-        OSError: if the output folder or temporary files cannot be written.
+            `find_union_grid`), a tile has a mask (field "mask"), two tiles
+            overlap (field "overlap") or a band setting differs from the first
+            tile's (field "scale", "offset", "units", "description", "colour
+            interpretation" or "colour table"). Nothing is written.
+        GeoCloudifyError: if GDAL cannot read a tile or write the output, or the
+            output folder or temporary files cannot be written. The GDAL, rasterio
+            or OS error is its cause.
     """
     # Check the arguments before touching any file.
     if overview_resampling not in OVERVIEW_METHODS:
-        raise ValueError(
+        raise InvalidInputError(
             f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
         )
     codec, blocksize = validate_cog_settings(compression_codec, blocksize)
     output = Path(output)
     if output.exists():
-        raise FileExistsError(f"output already exists: {output}")
-    # The tiles must share one grid and not overlap; the look comes from the first tile.
+        raise OutputExistsError(f"output already exists: {output}")
+    # The tiles must share one grid, not overlap and share band settings; the look
+    # comes from the first tile.
     grid, placed = _validate_and_place_tiles(tiles)
     check_no_overlap(placed)
-    tags, looks = _read_band_metadata(tiles[0])
+    tags, looks = _check_band_settings(tiles)
+    # Without a nodata, a gap would need a fill value that could be a real value.
+    gap_pixels = _gap_pixel_count(grid, placed)
+    if grid.nodata is None and gap_pixels:
+        raise InvalidInputError(
+            f"output {output}: nodata missing: the tiles leave {gap_pixels:,} pixels per band "
+            "uncovered and have no nodata to fill them with"
+        )
 
     # COG driver options for the final write.
     options = {
@@ -718,28 +801,24 @@ def merge_to_cog(
         "merging %d tiles into %s: compression_codec=%s blocksize=%d overview_resampling=%s num_threads=%s",
         len(placed), output, codec, blocksize, overview_resampling, options["NUM_THREADS"],
     )
-    # Without a nodata, gaps are filled with 0 and look like real 0 values: warn.
-    gap_pixels = _gap_pixel_count(grid, placed)
-    has_alpha = any(look.color_interp == "Alpha" for look in looks)
-    if grid.nodata is None and gap_pixels and not has_alpha:
-        logger.warning(
-            "%s pixels per band are not covered by any tile and the tiles have no nodata: "
-            "they are filled with 0 and cannot be told apart from real 0 values",
-            f"{gap_pixels:,}",
-        )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # Build in a hidden temporary folder next to the output, so the final move stays on one
-    # disk and a failure leaves nothing behind.
-    with tempfile.TemporaryDirectory(dir=output.parent, prefix=f".{output.name}.") as tmp_dir:
-        vrt = Path(tmp_dir) / "tiles.vrt"
-        temp_output = Path(tmp_dir) / output.name
-        _write_vrt(grid, placed, vrt, tags, looks)
-        # One worker thread, so the PAM setting applies to this write only
-        # (see `_write_cog_without_pam`).
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(_write_cog_without_pam, vrt, temp_output, options).result()
-        # Check again in case something wrote the output meanwhile.
-        if output.exists():
-            raise FileExistsError(f"output already exists: {output}")
-        os.replace(temp_output, output)
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        # Build in a hidden temporary folder next to the output, so the final move stays on one
+        # disk and a failure leaves nothing behind.
+        with tempfile.TemporaryDirectory(dir=output.parent, prefix=f".{output.name}.") as tmp_dir:
+            vrt = Path(tmp_dir) / "tiles.vrt"
+            temp_output = Path(tmp_dir) / output.name
+            _write_vrt(grid, placed, vrt, tags, looks)
+            # One worker thread, so the PAM setting applies to this write only
+            # (see `_write_cog_without_pam`).
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_write_cog_without_pam, vrt, temp_output, options).result()
+            # Check again in case something wrote the output meanwhile.
+            if output.exists():
+                raise OutputExistsError(f"output already exists: {output}")
+            os.replace(temp_output, output)
+    except GeoCloudifyError:
+        raise
+    except (*_GDAL_ERRORS, OSError) as error:
+        raise GeoCloudifyError(f"output {output}: cannot write: {error}") from error
     return output

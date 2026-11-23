@@ -29,12 +29,12 @@ if not result.passed:
 
 - `tiles`: a list or tuple of local paths, GDAL `/vsi...` paths, or URLs (`http(s)`, `ftp`, `s3`, `gs`, `az`, `oss`, `file`). Reading from cloud storage needs that provider's credentials set up for GDAL. A single path instead of a list is refused.
 - `overview_resampling`: `nearest` or `mode` for class data, `average` for continuous data. Nothing else is accepted.
-- `compression_codec`: a lossless codec, `DEFLATE` (default), `LZW`, `ZSTD`, `LZMA` or `NONE`, in any case. Lossy codecs (`JPEG`, `WEBP`, `LERC`, `LERC_DEFLATE`, `LERC_ZSTD`) are refused with a `ValueError`.
+- `compression_codec`: a lossless codec, `DEFLATE` (default), `LZW`, `ZSTD`, `LZMA` or `NONE`, in any case. Lossy codecs (`JPEG`, `WEBP`, `LERC`, `LERC_DEFLATE`, `LERC_ZSTD`) are refused with an `InvalidInputError`.
 - `blocksize`: the COG block size in pixels, an integer (`int` or a numpy integer) that is a power of two from 16 to 4096 (default 512). Strings, floats and bools are refused.
-- Refuses tiles that differ in CRS, pixel size, grid alignment (an origin offset that is not a whole number of pixels), data type, band count or nodata, and tiles that overlap. Also refuses a tile that marks empty pixels with a mask (such as an internal GeoTIFF mask) instead of a nodata value or an alpha band. The error (`TileMismatchError`) names the tile and the field (`mask` for a mask).
-- Places tiles pixel for pixel, never resampled. The output covers the union of the tiles; gaps are filled with the nodata value. When the tiles have no nodata, gaps are filled with 0 and a warning gives the number of pixels filled, since they cannot be told apart from real 0 values. Tiles with an alpha band get no warning: the alpha band is 0 there, so gaps are transparent.
+- Refuses tiles that differ in CRS, pixel size, grid alignment (an origin offset that is not a whole number of pixels), data type, band count or nodata, and tiles that overlap. Also refuses a tile that marks empty pixels with a mask (such as an internal GeoTIFF mask) instead of a nodata value or an alpha band. Also refuses a tile whose band scale, offset, units, description, colour interpretation or colour table differs from the first tile's. The error (`TileMismatchError`) names the tile and the field (`mask` for a mask).
+- Places tiles pixel for pixel, never resampled. The output covers the union of the tiles; gaps are filled with the nodata value. When the tiles leave gaps and have no nodata, the merge is refused with an `InvalidInputError` that gives the number of uncovered pixels, even when the tiles have an alpha band.
 - Keeps the tiles' CRS, grid, data type and nodata. It never sets a nodata the tiles do not have.
-- Writes a tiled, compressed COG with overviews built fresh by the given method. Band statistics (`STATISTICS_*`) are computed from the tiles' pixels; the tiles' own statistics are not copied. Gaps count as not valid when the tiles have a nodata; when they have none, the 0 fill is left out of the statistics. Colour table, band descriptions, scale, offset and other metadata come from the first tile.
+- Writes a tiled, compressed COG with overviews built fresh by the given method. Band statistics (`STATISTICS_*`) are computed from the tiles' pixels; the tiles' own statistics are not copied. Gaps count as not valid. Colour table, band descriptions, scale, offset, units and other metadata come from the first tile; metadata tags of the other tiles are not compared.
 - Refuses to overwrite an existing output. A failed write leaves no output and no temporary files. Nothing is written next to the tiles (no `.aux.xml`). Other threads still read `.aux.xml` files while a merge runs.
 - Works in blocks, so a whole raster is never held in memory.
 
@@ -46,4 +46,6 @@ if not result.passed:
 - comes from tiles that do not overlap;
 - holds, in every band, the same value as the tiles at every full-resolution pixel, and the gap fill where no tile covers it. This catches dropped, swapped or changed tiles and pixels, for any data type. Pixels are compared in windows, and each band that differs gives one `pixels` problem with the first differing places.
 
-It raises `TileMismatchError` when the tiles do not share one grid, and `ValueError` for complex data or when `tiles` is empty or a single path, instead of returning a problem.
+It raises `TileMismatchError` when the tiles do not share one grid, and `InvalidInputError` for complex data or when `tiles` is empty or a single path, instead of returning a problem.
+
+Every error these functions raise is a `GeoCloudifyError` (from `geo_cloudify.cog.merge`), so a caller can catch one type. A GDAL or rasterio failure is raised as a `GeoCloudifyError` with the original error as its cause. `InvalidInputError` and `TileMismatchError` are also `ValueError`s, and `OutputExistsError` (an existing output) is also a `FileExistsError`.
