@@ -20,4 +20,14 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "ruff>=0.17.6",
 ]
+
+[tool.ruff]
+line-length = 120
+# Standalone proofs of concept, not part of the package and not held to its rules (AGENTS.md).
+extend-exclude = ["scripts"]
+
+[tool.ruff.lint]
+# Style errors, undefined and unused names, import order, likely bugs, and syntax Python 3.12 has a newer form for.
+select = ["E", "W", "F", "I", "B", "UP"]
