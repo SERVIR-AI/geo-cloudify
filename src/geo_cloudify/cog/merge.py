@@ -28,16 +28,16 @@ from rasterio.enums import MaskFlags
 from rasterio.transform import Affine
 
 # COMPRESS values listed in the GDAL COG driver documentation.
-COG_COMPRESSION_CODECS = frozenset(
+_COG_COMPRESSION_CODECS = frozenset(
     {"NONE", "LZW", "JPEG", "DEFLATE", "ZSTD", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD", "LZMA"}
 )
 
 logger = logging.getLogger(__name__)
 
 # How far (in pixels) an origin offset may be from a whole number and still count as aligned.
-ALIGN_TOLERANCE = 1e-6
+_ALIGN_TOLERANCE = 1e-6
 # How far (relative) two pixel sizes may differ and still count as equal.
-PIXEL_SIZE_TOLERANCE = 1e-9
+_PIXEL_SIZE_TOLERANCE = 1e-9
 # Errors GDAL and rasterio raise; they reach callers wrapped in `GeoCloudifyError`.
 _GDAL_ERRORS = (rasterio.errors.RasterioError, rasterio.errors.CRSError, CPLE_BaseError)
 
@@ -82,7 +82,7 @@ class TileMismatchError(InvalidInputError):
 
 
 @dataclass(frozen=True)
-class TileGrid:
+class _TileGrid:
     """The grid that covers all tiles: the shape a merged output takes.
 
     Attributes:
@@ -106,7 +106,7 @@ class TileGrid:
 
 @dataclass(frozen=True)
 class _TileHeader:
-    """What `find_union_grid` needs from one tile's header.
+    """What `_find_union_grid` needs from one tile's header.
 
     Attributes:
         tile: the tile as the caller gave it (a path, as a string).
@@ -251,7 +251,7 @@ def _pixel_offset(header: _TileHeader, ref: _TileHeader) -> tuple[int, int]:
     row = (tile_transform.f - ref_transform.f) / ref_transform.e  # ref_transform.e is negative, so a tile further north gets a negative row
     # Each offset must be a whole number of pixels, within a tiny tolerance.
     for axis, offset in (("x", col), ("y", row)):
-        if abs(offset - round(offset)) > ALIGN_TOLERANCE:
+        if abs(offset - round(offset)) > _ALIGN_TOLERANCE:
             raise TileMismatchError(
                 header.tile, "grid alignment",
                 f"origin is {offset:.6f} pixels from {ref.tile} along {axis}, not a whole number",
@@ -259,7 +259,7 @@ def _pixel_offset(header: _TileHeader, ref: _TileHeader) -> tuple[int, int]:
     return round(col), round(row)
 
 
-def find_union_grid(tiles: Sequence[str | PathLike]) -> TileGrid:
+def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
     """Check that tiles share one grid and return the grid that covers them all.
 
     The first tile is the reference. Every other tile must have the same CRS
@@ -289,8 +289,8 @@ def find_union_grid(tiles: Sequence[str | PathLike]) -> TileGrid:
     return _validate_and_place_tiles(tiles)[0]
 
 
-def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid, list[tuple[_TileHeader, int, int]]]:
-    """Run the `find_union_grid` checks and also say where each tile sits on the union grid.
+def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGrid, list[tuple[_TileHeader, int, int]]]:
+    """Run the `_find_union_grid` checks and also say where each tile sits on the union grid.
 
     Args:
         tiles: a list or tuple of one or more local paths.
@@ -300,8 +300,8 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
         column and row of its top-left pixel on the union grid (0 or more).
 
     Raises:
-        InvalidInputError: as `find_union_grid`.
-        TileMismatchError: as `find_union_grid`.
+        InvalidInputError: as `_find_union_grid`.
+        TileMismatchError: as `_find_union_grid`.
         GeoCloudifyError: if GDAL cannot open a tile.
     """
     if isinstance(tiles, (str, bytes, PathLike)):
@@ -317,8 +317,8 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
         if header.crs != ref.crs:
             raise TileMismatchError(header.tile, "crs", f"{header.crs} vs {ref.crs} in {ref.tile}")
         tile_transform, ref_transform = header.transform, ref.transform
-        if not (math.isclose(tile_transform.a, ref_transform.a, rel_tol=PIXEL_SIZE_TOLERANCE)
-                and math.isclose(tile_transform.e, ref_transform.e, rel_tol=PIXEL_SIZE_TOLERANCE)):
+        if not (math.isclose(tile_transform.a, ref_transform.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
+                and math.isclose(tile_transform.e, ref_transform.e, rel_tol=_PIXEL_SIZE_TOLERANCE)):
             raise TileMismatchError(
                 header.tile, "pixel size", f"({tile_transform.a}, {-tile_transform.e}) vs ({ref_transform.a}, {-ref_transform.e}) in {ref.tile}"
             )
@@ -346,7 +346,7 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[TileGrid
     # the reference plus a pixel count, so float error does not move it.
     westmost_header = next(header for (col, _), header in zip(offsets_from_ref, headers) if col == left)
     northmost_header = next(header for (_, row), header in zip(offsets_from_ref, headers) if row == top)
-    grid = TileGrid(
+    grid = _TileGrid(
         crs=ref.crs,
         transform=Affine(ref.transform.a, 0.0, westmost_header.transform.c, 0.0, ref.transform.e, northmost_header.transform.f),
         width=right - left,
@@ -506,7 +506,7 @@ def _add_metadata(parent: ET.Element, tags: dict[str, str]) -> None:
 
 
 def _write_vrt(
-    grid: TileGrid,
+    grid: _TileGrid,
     placed: Sequence[tuple[_TileHeader, int, int]],
     path: Path,
     tags: dict[str, str],
@@ -570,13 +570,13 @@ def _write_vrt(
 
 
 # Overview methods the caller may choose: nearest or mode for class data, average for continuous data.
-OVERVIEW_METHODS = ("nearest", "mode", "average")
+_OVERVIEW_METHODS = ("nearest", "mode", "average")
 # Codecs that change pixel values. LERC is lossless only with a zero error allowance,
 # which the merge does not take, so every LERC variant is refused.
-LOSSY_CODECS = frozenset({"JPEG", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD"})
+_LOSSY_CODECS = frozenset({"JPEG", "WEBP", "LERC", "LERC_DEFLATE", "LERC_ZSTD"})
 
 
-def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, int]:
+def _validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, int]:
     """Check the codec and block size for a merge and return them as GDAL takes them.
 
     Args:
@@ -598,9 +598,9 @@ def validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str, 
     if not isinstance(compression_codec, str):
         raise InvalidInputError(f"compression_codec must be a codec name, got {compression_codec!r}")
     codec = compression_codec.upper()
-    if codec in LOSSY_CODECS:
+    if codec in _LOSSY_CODECS:
         raise InvalidInputError(f"compression_codec {compression_codec!r} is lossy; use one of DEFLATE, LZW, ZSTD, LZMA or NONE")
-    if codec not in COG_COMPRESSION_CODECS:
+    if codec not in _COG_COMPRESSION_CODECS:
         raise InvalidInputError(f"compression_codec must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compression_codec!r}")
     if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
         raise InvalidInputError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
@@ -634,7 +634,7 @@ def _write_cog_without_pam(vrt: Path, temp_output: Path, options: dict) -> None:
         rasterio.shutil.copy(str(vrt), str(temp_output), driver="COG", **options)
 
 
-def _gap_pixel_count(grid: TileGrid, placed: Sequence[tuple[_TileHeader, int, int]]) -> int:
+def _gap_pixel_count(grid: _TileGrid, placed: Sequence[tuple[_TileHeader, int, int]]) -> int:
     """Return how many pixels of the union grid no tile covers.
 
     Args:
@@ -707,8 +707,9 @@ def merge_to_cog(
             local file, or the tiles leave places uncovered and have no nodata
             (the message gives the number of uncovered pixels). Nothing is written.
         OutputExistsError: if `output` already exists. It is left untouched.
-        TileMismatchError: naming the tile and the field when tiles differ (see
-            `find_union_grid`), a tile has a mask (field "mask"), two tiles
+        TileMismatchError: naming the tile and the field when tiles differ (field
+            "crs", "orientation", "pixel size", "grid alignment", "band count",
+            "data type" or "nodata"), a tile has a mask (field "mask"), two tiles
             overlap (field "overlap") or a band setting differs from the first
             tile's (field "scale", "offset", "units", "description", "colour
             interpretation" or "colour table"). Nothing is written.
@@ -717,11 +718,11 @@ def merge_to_cog(
             or OS error is its cause.
     """
     # Check the arguments before touching any file.
-    if overview_resampling not in OVERVIEW_METHODS:
+    if overview_resampling not in _OVERVIEW_METHODS:
         raise InvalidInputError(
-            f"overview_resampling must be one of {', '.join(OVERVIEW_METHODS)}, got {overview_resampling!r}"
+            f"overview_resampling must be one of {', '.join(_OVERVIEW_METHODS)}, got {overview_resampling!r}"
         )
-    codec, blocksize = validate_cog_settings(compression_codec, blocksize)
+    codec, blocksize = _validate_cog_settings(compression_codec, blocksize)
     output = Path(output)
     if output.exists():
         raise OutputExistsError(f"output already exists: {output}")

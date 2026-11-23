@@ -17,12 +17,12 @@ from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import (
-    ALIGN_TOLERANCE,
+    _ALIGN_TOLERANCE,
     _GDAL_ERRORS,
-    PIXEL_SIZE_TOLERANCE,
+    _PIXEL_SIZE_TOLERANCE,
     GeoCloudifyError,
     InvalidInputError,
-    TileGrid,
+    _TileGrid,
     TileMismatchError,
     _check_no_overlap,
     _TileHeader,
@@ -83,8 +83,7 @@ class MergeCheck:
 def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) -> MergeCheck:
     """Check that `output` is a valid COG holding exactly the pixels of `tiles`.
 
-    The expected grid is the union of the tiles, as `find_union_grid` gives it. The
-    checks are:
+    The expected grid is the union of the tiles. The checks are:
     - a valid COG (any `cog_validate` error or warning is a problem);
     - overviews whose smallest level fits in one block (an image that fits in one
       block needs none, and every band must have the same levels);
@@ -114,7 +113,9 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
         InvalidInputError: if `tiles` is empty or a single path instead of a list, a
             tile is not a local file, or the tiles hold complex numbers (the pixel
             comparison does not support them).
-        TileMismatchError: if the tiles do not share one grid (see `find_union_grid`).
+        TileMismatchError: if the tiles do not share one grid, naming the tile and
+            the field ("crs", "orientation", "pixel size", "grid alignment", "band
+            count", "data type", "nodata" or "mask").
         GeoCloudifyError: if GDAL cannot open or read a tile or the output, with
             the GDAL or rasterio error as its cause.
     """
@@ -210,16 +211,16 @@ def _same_transform(actual: Affine, expected: Affine) -> bool:
         are zero and the origins are within a millionth of a pixel.
     """
     # Origin and rotation may be off by a millionth of a pixel, in map units.
-    tolerance_x, tolerance_y = ALIGN_TOLERANCE * abs(expected.a), ALIGN_TOLERANCE * abs(expected.e)
+    tolerance_x, tolerance_y = _ALIGN_TOLERANCE * abs(expected.a), _ALIGN_TOLERANCE * abs(expected.e)
     return (
-        math.isclose(actual.a, expected.a, rel_tol=PIXEL_SIZE_TOLERANCE)
-        and math.isclose(actual.e, expected.e, rel_tol=PIXEL_SIZE_TOLERANCE)
+        math.isclose(actual.a, expected.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
+        and math.isclose(actual.e, expected.e, rel_tol=_PIXEL_SIZE_TOLERANCE)
         and abs(actual.b) <= tolerance_x and abs(actual.d) <= tolerance_y
         and abs(actual.c - expected.c) <= tolerance_x and abs(actual.f - expected.f) <= tolerance_y
     )
 
 
-def _check_grid(output_dataset: DatasetReader, grid: TileGrid) -> list[Problem]:
+def _check_grid(output_dataset: DatasetReader, grid: _TileGrid) -> list[Problem]:
     """Return a problem for each grid field of the output that differs from the tiles'.
 
     Args:
@@ -296,7 +297,7 @@ def _as_unsigned_bits(data: np.ndarray) -> np.ndarray:
 
 
 def _check_pixels(
-    placed: Sequence[tuple[_TileHeader, int, int]], grid: TileGrid, output_dataset: DatasetReader
+    placed: Sequence[tuple[_TileHeader, int, int]], grid: _TileGrid, output_dataset: DatasetReader
 ) -> list[Problem]:
     """Compare every full-resolution pixel of the output with what the tiles hold there.
 
@@ -350,7 +351,7 @@ def _check_pixels(
     return problems
 
 
-def _grid_mismatch_reason(output_dataset: DatasetReader, grid: TileGrid) -> str | None:
+def _grid_mismatch_reason(output_dataset: DatasetReader, grid: _TileGrid) -> str | None:
     """Return why the output's pixels cannot be lined up with the tiles', or None.
 
     Args:
