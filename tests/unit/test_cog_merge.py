@@ -390,6 +390,24 @@ def test_overlapping_tiles_are_refused_naming_both(tmp_path):
     assert not (tmp_path / "merged.tif").exists()
 
 
+def test_url_tile_is_refused_before_it_is_opened(tmp_path, monkeypatch):
+    local = _tile(tmp_path / "a.tif", width=10, height=10)
+    url = "https://example.com/b.tif"
+    real_open = rasterio.open
+    opened = []
+
+    def record_open(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(rasterio, "open", record_open)
+    with pytest.raises(InvalidInputError, match="not a local file") as caught:
+        merge_to_cog([local, url], tmp_path / "merged.tif", "mode")
+    assert url in str(caught.value)
+    assert url not in opened, "the URL tile was opened before it was refused"
+    assert not (tmp_path / "merged.tif").exists()
+
+
 def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     tiles = _random_tiles(tmp_path)
     monkeypatch.chdir(tmp_path)

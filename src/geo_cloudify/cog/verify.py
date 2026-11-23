@@ -63,7 +63,7 @@ class MergeCheck:
     """The result of checking a merged COG against its tiles.
 
     Attributes:
-        output: the checked file, as the caller gave it (a path or a URL).
+        output: the checked file, as the caller gave it (a path to a local file).
         problems: every problem found, in the order the checks ran; empty when all pass.
     """
 
@@ -103,7 +103,7 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
     Args:
         tiles: a list or tuple of one or more local paths: the tiles the output
             was merged from.
-        output: a local path or URL of the merged COG.
+        output: a local path of the merged COG.
 
     Returns:
         A MergeCheck listing every problem found (empty when all checks pass).
@@ -111,8 +111,9 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
         that differs, with how many pixels differ and the first few places.
 
     Raises:
-        InvalidInputError: if `tiles` is empty or a single path instead of a list, or
-            the tiles hold complex numbers (the pixel comparison does not support them).
+        InvalidInputError: if `tiles` is empty or a single path instead of a list, a
+            tile is not a local file, or the tiles hold complex numbers (the pixel
+            comparison does not support them).
         TileMismatchError: if the tiles do not share one grid (see `find_union_grid`).
         GeoCloudifyError: if GDAL cannot open or read a tile or the output, with
             the GDAL or rasterio error as its cause.
@@ -145,7 +146,7 @@ def _check_cog_validity(output: str | PathLike) -> list[Problem]:
     """Return a problem for each error and each warning `cog_validate` gives.
 
     Args:
-        output: a local path or URL of the file to check.
+        output: a local path of the file to check.
 
     Returns:
         One "cog" problem per error or warning; empty when the file is a clean COG.
@@ -163,7 +164,7 @@ def _check_overviews(output_dataset: DatasetReader, output: str | PathLike) -> l
 
     Args:
         output_dataset: the open output.
-        output: its path or URL, used to open the smallest overview level.
+        output: its path, used to open the smallest overview level.
 
     Returns:
         "overviews" problems: bands with different overview levels, or a smallest

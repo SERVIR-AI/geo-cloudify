@@ -175,8 +175,11 @@ def _read_header(tile: str | PathLike) -> _TileHeader:
         The tile's header.
 
     Raises:
+        InvalidInputError: if tile does not point to a local file, with the given path.
         GeoCloudifyError: if GDAL cannot open the tile, with the GDAL error as its cause.
     """
+    if not Path(tile).is_file():
+        raise InvalidInputError(f"tile {tile} is not a local file")
     try:
         with rasterio.open(tile) as dataset:
             return _TileHeader(
@@ -276,8 +279,8 @@ def find_union_grid(tiles: Sequence[str | PathLike]) -> TileGrid:
         transform, width and height that cover every tile.
 
     Raises:
-        InvalidInputError: if `tiles` is empty, or is a single string or path object
-            instead of a sequence of them.
+        InvalidInputError: if `tiles` is empty, is a single string or path object
+            instead of a sequence of them, or a tile is not a local file.
         TileMismatchError: naming the first tile that differs and the field
             ("crs", "orientation", "pixel size", "grid alignment", "band count",
             "data type", "nodata" or "mask").
@@ -700,9 +703,9 @@ def merge_to_cog(
     Raises:
         InvalidInputError: if `overview_resampling` is not one of the allowed values,
             `compression_codec` is lossy or unknown, `blocksize` is not allowed,
-            `tiles` is empty or a single path instead of a list, or the tiles
-            leave places uncovered and have no nodata (the message gives the
-            number of uncovered pixels). Nothing is written.
+            `tiles` is empty or a single path instead of a list, a tile is not a
+            local file, or the tiles leave places uncovered and have no nodata
+            (the message gives the number of uncovered pixels). Nothing is written.
         OutputExistsError: if `output` already exists. It is left untouched.
         TileMismatchError: naming the tile and the field when tiles differ (see
             `find_union_grid`), a tile has a mask (field "mask"), two tiles
