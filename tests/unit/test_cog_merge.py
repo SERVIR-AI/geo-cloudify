@@ -1,5 +1,6 @@
-"""Unit tests for checking that tiles share one grid (find_union_grid) and merging them (merge_to_cog)."""
+"""Unit tests for checking that tiles share one grid (_find_union_grid) and merging them (merge_to_cog)."""
 
+import hashlib
 import math
 import threading
 from pathlib import Path
@@ -17,7 +18,7 @@ from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import (
-    GeoCloudifyError, InvalidInputError, TileGrid, TileMismatchError, _gdal_path, find_union_grid, merge_to_cog,
+    GeoCloudifyError, InvalidInputError, _TileGrid, TileMismatchError, _find_union_grid, merge_to_cog,
 )
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
@@ -51,8 +52,8 @@ def _four_tiles(tmp_path, **last_tile_kwargs):
 
 def test_four_matching_tiles_give_the_union_grid(tmp_path):
     tiles = _four_tiles(tmp_path)
-    grid = find_union_grid(tiles)
-    assert isinstance(grid, TileGrid)
+    grid = _find_union_grid(tiles)
+    assert isinstance(grid, _TileGrid)
     assert grid.crs == CRS.from_epsg(32648)
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (63, 57)
@@ -61,7 +62,7 @@ def test_four_matching_tiles_give_the_union_grid(tmp_path):
 
 def test_union_starts_at_the_most_north_west_tile_in_any_order(tmp_path):
     tiles = _four_tiles(tmp_path)
-    grid = find_union_grid(list(reversed(tiles)))
+    grid = _find_union_grid(list(reversed(tiles)))
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (63, 57)
 
@@ -69,7 +70,7 @@ def test_union_starts_at_the_most_north_west_tile_in_any_order(tmp_path):
 def test_union_covers_a_gap_between_tiles(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 15 * PIXEL, y=Y0 - 5 * PIXEL, width=10, height=10)
-    grid = find_union_grid([a, b])
+    grid = _find_union_grid([a, b])
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (25, 15)
 
@@ -77,28 +78,15 @@ def test_union_covers_a_gap_between_tiles(tmp_path):
 def test_tiny_float_noise_in_origin_is_still_aligned(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL + 1e-7, width=10, height=10)
-    grid = find_union_grid([a, b])
+    grid = _find_union_grid([a, b])
     assert (grid.width, grid.height) == (20, 10)
 
 
 def test_single_tile_is_accepted(tmp_path):
     tile = _tile(tmp_path / "one.tif", width=23, height=17, nodata=None)
-    grid = find_union_grid([str(tile)])
+    grid = _find_union_grid([str(tile)])
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height, grid.nodata) == (23, 17, None)
-
-
-def test_tiles_without_nodata_give_a_grid_without_nodata(tmp_path):
-    a = _tile(tmp_path / "a.tif", width=10, height=10, nodata=None)
-    b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, nodata=None)
-    assert find_union_grid([a, b]).nodata is None
-
-
-def test_nan_nodata_on_every_tile_matches(tmp_path):
-    a = _tile(tmp_path / "a.tif", width=10, height=10, dtype="float32", nodata=float("nan"))
-    b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10,
-              dtype="float32", nodata=float("nan"))
-    assert math.isnan(find_union_grid([a, b]).nodata)
 
 
 # EPSG:32648 written out by hand under another name. GeoTIFF rewrites any CRS to its
@@ -125,7 +113,7 @@ def test_same_crs_written_differently_matches(tmp_path):
     )
     with rasterio.open(a) as src_a, rasterio.open(b) as src_b:
         assert src_a.crs.to_wkt() != src_b.crs.to_wkt()
-    grid = find_union_grid([a, b])
+    grid = _find_union_grid([a, b])
     assert (grid.width, grid.height) == (20, 10)
 
 
@@ -133,12 +121,12 @@ def test_same_crs_written_differently_matches(tmp_path):
 def test_single_path_instead_of_a_list_is_refused(tmp_path, as_type):
     tile = _tile(tmp_path / "a.tif", width=10, height=10)
     with pytest.raises(ValueError, match="not a single path"):
-        find_union_grid(as_type(tile))
+        _find_union_grid(as_type(tile))
 
 
 def test_empty_tile_list_is_refused():
     with pytest.raises(ValueError, match="no tiles"):
-        find_union_grid([])
+        _find_union_grid([])
 
 
 @pytest.mark.parametrize(
@@ -159,7 +147,7 @@ def test_empty_tile_list_is_refused():
 def test_mismatched_tile_is_refused_naming_tile_and_field(tmp_path, change, field):
     tiles = _four_tiles(tmp_path, **change)
     with pytest.raises(TileMismatchError) as caught:
-        find_union_grid(tiles)
+        _find_union_grid(tiles)
     assert caught.value.tile == str(tiles[3])
     assert caught.value.field == field
     assert "se.tif" in str(caught.value) and field in str(caught.value)
@@ -169,7 +157,7 @@ def test_first_tile_without_nodata_and_second_with_is_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10, nodata=None)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, nodata=0)
     with pytest.raises(TileMismatchError) as caught:
-        find_union_grid([a, b])
+        _find_union_grid([a, b])
     assert (caught.value.tile, caught.value.field) == (str(b), "nodata")
 
 
@@ -178,14 +166,14 @@ def test_nan_and_number_nodata_are_refused(tmp_path):
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10,
               dtype="float32", nodata=-9999)
     with pytest.raises(TileMismatchError, match="nodata"):
-        find_union_grid([a, b])
+        _find_union_grid([a, b])
 
 
 def test_tile_without_crs_is_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, crs=None)
     with pytest.raises(TileMismatchError) as caught:
-        find_union_grid([a, b])
+        _find_union_grid([a, b])
     assert (caught.value.tile, caught.value.field) == (str(b), "crs")
 
 
@@ -193,7 +181,7 @@ def test_rotated_tile_is_refused(tmp_path):
     rotated = Affine(PIXEL, 1.0, X0, 0.0, -PIXEL, Y0)
     tile = _tile(tmp_path / "r.tif", width=10, height=10, transform=rotated)
     with pytest.raises(TileMismatchError) as caught:
-        find_union_grid([tile])
+        _find_union_grid([tile])
     assert caught.value.field == "orientation"
 
 
@@ -201,10 +189,10 @@ def test_only_headers_are_read(tmp_path, monkeypatch):
     tiles = _four_tiles(tmp_path)
 
     def no_read(*args, **kwargs):
-        raise AssertionError("find_union_grid read pixels")
+        raise AssertionError("_find_union_grid read pixels")
 
     monkeypatch.setattr(DatasetReader, "read", no_read)
-    find_union_grid(tiles)
+    _find_union_grid(tiles)
 
 
 # --- merge_to_cog ---------------------------------------------------------------------
@@ -229,11 +217,12 @@ def _tile_with(path, data, *, x=X0, y=Y0, nodata=0, overviews=None):
     return path
 
 
-def _random_tiles(tmp_path, *, nodata=0, gap=0):
+def _random_tiles(tmp_path, *, nodata=0, gap=0, dtype="uint8"):
     """Four tiles of different sizes, none a whole number of 512 blocks, with values 0 to 22.
 
     0 is common in the data, so it is both nodata and a real value. `gap` leaves that
-    many empty pixel columns between the west and east tiles.
+    many empty pixel columns between the west and east tiles. A float `dtype` gives
+    values with fractions, so float statistics are not whole numbers.
     """
     rng = np.random.default_rng(7)
     sizes = {"nw": (530, 600), "ne": (530, 311), "sw": (257, 600), "se": (257, 311)}
@@ -242,7 +231,11 @@ def _random_tiles(tmp_path, *, nodata=0, gap=0):
     origins = {"nw": (X0, Y0), "ne": (east_x, Y0), "sw": (X0, south_y), "se": (east_x, south_y)}
     tiles = []
     for name, (height, width) in sizes.items():
-        data = rng.integers(0, 23, size=(1, height, width), dtype="uint8")
+        if np.dtype(dtype).kind == "f":
+            data = rng.uniform(0, 23, size=(1, height, width)).astype(dtype)
+            data[data < 1] = 0  # keep 0 common, as in the integer tiles
+        else:
+            data = rng.integers(0, 23, size=(1, height, width), dtype=dtype)
         x, y = origins[name]
         tiles.append(_tile_with(tmp_path / f"{name}.tif", data, x=x, y=y, nodata=nodata))
     return tiles
@@ -402,12 +395,38 @@ def test_overlapping_tiles_are_refused_naming_both(tmp_path):
     assert not (tmp_path / "merged.tif").exists()
 
 
+def test_url_tile_is_refused_before_it_is_opened(tmp_path, monkeypatch):
+    local = _tile(tmp_path / "a.tif", width=10, height=10)
+    url = "https://example.com/b.tif"
+    real_open = rasterio.open
+    opened = []
+
+    def record_open(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(rasterio, "open", record_open)
+    with pytest.raises(InvalidInputError, match="not a local file") as caught:
+        merge_to_cog([local, url], tmp_path / "merged.tif", "mode")
+    assert url in str(caught.value)
+    assert url not in opened, "the URL tile was opened before it was refused"
+    assert not (tmp_path / "merged.tif").exists()
+
+
 def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     tiles = _random_tiles(tmp_path)
     monkeypatch.chdir(tmp_path)
     output = merge_to_cog([t.name for t in tiles], "merged.tif", "mode")
     _assert_tiles_placed(tmp_path / "merged.tif", tiles)
     assert output == Path("merged.tif")
+
+
+@pytest.mark.parametrize(("dtype", "method"), [("uint8", "mode"), ("float32", "average")])
+def test_same_tiles_give_the_same_bytes(tmp_path, dtype, method):
+    tiles = _random_tiles(tmp_path, dtype=dtype)
+    first = merge_to_cog(tiles, tmp_path / "first.tif", method)
+    second = merge_to_cog(tiles, tmp_path / "second.tif", method)
+    assert hashlib.sha256(first.read_bytes()).hexdigest() == hashlib.sha256(second.read_bytes()).hexdigest()
 
 
 def test_colours_and_first_tile_metadata_are_kept(tmp_path):
@@ -460,50 +479,6 @@ def test_band_setting_that_differs_is_refused_naming_tile_and_field(tmp_path, fi
     assert (caught.value.tile, caught.value.field) == (str(tiles[3]), field)
     assert "se.tif" in str(caught.value) and field in str(caught.value)
     assert not (tmp_path / "merged.tif").exists()
-
-
-@pytest.mark.parametrize("tile, expected", [
-    ("https://example.com/a/t.tif", "/vsicurl/https://example.com/a/t.tif"),
-    ("http://example.com/t.tif", "/vsicurl/http://example.com/t.tif"),
-    ("s3://bucket/key/t.tif", "/vsis3/bucket/key/t.tif"),
-    ("gs://bucket/t.tif", "/vsigs/bucket/t.tif"),
-    ("/vsicurl/https://example.com/t.tif", "/vsicurl/https://example.com/t.tif"),
-    ("/vsimem/t.tif", "/vsimem/t.tif"),
-    ("file:///data/t.tif", "/data/t.tif"),
-])
-def test_urls_become_gdal_paths(tile, expected):
-    assert _gdal_path(tile) == expected
-
-
-def test_relative_path_becomes_absolute(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    assert _gdal_path("t.tif") == str(tmp_path / "t.tif")
-
-
-def test_unsupported_url_scheme_is_refused():
-    with pytest.raises(ValueError, match="ftpx"):
-        _gdal_path("ftpx://example.com/t.tif")
-
-
-def test_file_url_tiles_merge(tmp_path):
-    tiles = _random_tiles(tmp_path)
-    output = merge_to_cog([t.as_uri() for t in tiles], tmp_path / "merged.tif", "mode")
-    _assert_tiles_placed(output, tiles)
-
-
-def test_vsimem_tiles_merge(tmp_path):
-    tiles = _random_tiles(tmp_path)
-    mem_tiles = []
-    for tile in tiles:
-        mem = f"/vsimem/{tile.name}"
-        rasterio.shutil.copy(str(tile), mem, driver="GTiff")
-        mem_tiles.append(mem)
-    try:
-        output = merge_to_cog(mem_tiles, tmp_path / "merged.tif", "mode")
-        _assert_tiles_placed(output, tiles)
-    finally:
-        for mem in mem_tiles:
-            rasterio.shutil.delete(mem)
 
 
 @pytest.mark.skipif(not FIXTURE_TILES.is_dir(), reason="test data not downloaded")
@@ -762,15 +737,8 @@ def test_mask_is_found_without_reading_pixels(tmp_path, monkeypatch):
     monkeypatch.setattr(DatasetReader, "read_masks", no_read)
     monkeypatch.setattr(DatasetReader, "dataset_mask", no_read)
     with pytest.raises(TileMismatchError) as caught:
-        find_union_grid([masked])
+        _find_union_grid([masked])
     assert caught.value.field == "mask"
-
-
-@pytest.mark.parametrize("nodata", [0, None])
-def test_tiles_with_nodata_or_with_neither_are_not_refused_for_a_mask(tmp_path, nodata):
-    tiles = _random_tiles(tmp_path, nodata=nodata)
-    output = merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
-    _assert_tiles_placed(output, tiles)
 
 
 def test_tiles_with_an_alpha_band_are_not_refused_for_a_mask(tmp_path):

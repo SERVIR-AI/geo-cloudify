@@ -1,15 +1,5 @@
 """COG verification: check that a merged COG is a faithful copy of its tiles.
 
-`check_merged_cog` runs these checks on the output of `merge_to_cog` and returns
-every problem it finds, not only the first:
-
-- it is a valid COG (`rio_cogeo.cog_validate`; errors and warnings both count);
-- it has overviews down to one block, or none when it fits in one block;
-- its CRS, transform, size, band count, data type and nodata match the tiles;
-- no two tiles overlap;
-- every full-resolution pixel equals what the tiles hold at that place, or the
-  fill value in gaps between tiles. This catches dropped, swapped or changed pixels.
-
 Pixels are read in block-aligned windows, so a whole raster is never held in memory.
 """
 
@@ -27,17 +17,17 @@ from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import (
-    ALIGN_TOLERANCE,
+    _ALIGN_TOLERANCE,
     _GDAL_ERRORS,
-    PIXEL_SIZE_TOLERANCE,
+    _PIXEL_SIZE_TOLERANCE,
     GeoCloudifyError,
     InvalidInputError,
-    TileGrid,
+    _TileGrid,
     TileMismatchError,
-    check_no_overlap,
+    _check_no_overlap,
     _TileHeader,
     _validate_and_place_tiles,
-    nodata_equal,
+    _nodata_equal,
 )
 
 # About how many pixels one read may hold. Windows are rounded to whole blocks.
@@ -73,7 +63,7 @@ class MergeCheck:
     """The result of checking a merged COG against its tiles.
 
     Attributes:
-        output: the checked file, as the caller gave it (a path or a URL).
+        output: the checked file, as the caller gave it (a path to a local file).
         problems: every problem found, in the order the checks ran; empty when all pass.
     """
 
@@ -93,8 +83,7 @@ class MergeCheck:
 def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) -> MergeCheck:
     """Check that `output` is a valid COG holding exactly the pixels of `tiles`.
 
-    The expected grid is the union of the tiles, as `find_union_grid` gives it. The
-    checks are:
+    The expected grid is the union of the tiles. The checks are:
     - a valid COG (any `cog_validate` error or warning is a problem);
     - overviews whose smallest level fits in one block (an image that fits in one
       block needs none, and every band must have the same levels);
@@ -111,9 +100,9 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
     problem says "not compared" and why.
 
     Args:
-        tiles: a list or tuple of one or more local paths or URLs GDAL can open:
-            the tiles the output was merged from.
-        output: a local path or URL of the merged COG.
+        tiles: a list or tuple of one or more local paths: the tiles the output
+            was merged from.
+        output: a local path of the merged COG.
 
     Returns:
         A MergeCheck listing every problem found (empty when all checks pass).
@@ -121,9 +110,12 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
         that differs, with how many pixels differ and the first few places.
 
     Raises:
-        InvalidInputError: if `tiles` is empty or a single path instead of a list, or
-            the tiles hold complex numbers (the pixel comparison does not support them).
-        TileMismatchError: if the tiles do not share one grid (see `find_union_grid`).
+        InvalidInputError: if `tiles` is empty or a single path instead of a list, a
+            tile is not a local file, or the tiles hold complex numbers (the pixel
+            comparison does not support them).
+        TileMismatchError: if the tiles do not share one grid, naming the tile and
+            the field ("crs", "orientation", "pixel size", "grid alignment", "band
+            count", "data type", "nodata" or "mask").
         GeoCloudifyError: if GDAL cannot open or read a tile or the output, with
             the GDAL or rasterio error as its cause.
     """
@@ -140,7 +132,7 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
             # Overlapping tiles are reported as a problem here, not raised. With an
             # overlap there is no one expected value, so pixels are not compared.
             try:
-                check_no_overlap(placed)
+                _check_no_overlap(placed)
             except TileMismatchError as error:
                 problems.append(Problem("overlap", str(error)))
                 problems.append(Problem("pixels", "not compared: tiles overlap"))
@@ -155,7 +147,7 @@ def _check_cog_validity(output: str | PathLike) -> list[Problem]:
     """Return a problem for each error and each warning `cog_validate` gives.
 
     Args:
-        output: a local path or URL of the file to check.
+        output: a local path of the file to check.
 
     Returns:
         One "cog" problem per error or warning; empty when the file is a clean COG.
@@ -173,7 +165,7 @@ def _check_overviews(output_dataset: DatasetReader, output: str | PathLike) -> l
 
     Args:
         output_dataset: the open output.
-        output: its path or URL, used to open the smallest overview level.
+        output: its path, used to open the smallest overview level.
 
     Returns:
         "overviews" problems: bands with different overview levels, or a smallest
@@ -219,16 +211,16 @@ def _same_transform(actual: Affine, expected: Affine) -> bool:
         are zero and the origins are within a millionth of a pixel.
     """
     # Origin and rotation may be off by a millionth of a pixel, in map units.
-    tolerance_x, tolerance_y = ALIGN_TOLERANCE * abs(expected.a), ALIGN_TOLERANCE * abs(expected.e)
+    tolerance_x, tolerance_y = _ALIGN_TOLERANCE * abs(expected.a), _ALIGN_TOLERANCE * abs(expected.e)
     return (
-        math.isclose(actual.a, expected.a, rel_tol=PIXEL_SIZE_TOLERANCE)
-        and math.isclose(actual.e, expected.e, rel_tol=PIXEL_SIZE_TOLERANCE)
+        math.isclose(actual.a, expected.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
+        and math.isclose(actual.e, expected.e, rel_tol=_PIXEL_SIZE_TOLERANCE)
         and abs(actual.b) <= tolerance_x and abs(actual.d) <= tolerance_y
         and abs(actual.c - expected.c) <= tolerance_x and abs(actual.f - expected.f) <= tolerance_y
     )
 
 
-def _check_grid(output_dataset: DatasetReader, grid: TileGrid) -> list[Problem]:
+def _check_grid(output_dataset: DatasetReader, grid: _TileGrid) -> list[Problem]:
     """Return a problem for each grid field of the output that differs from the tiles'.
 
     Args:
@@ -254,7 +246,7 @@ def _check_grid(output_dataset: DatasetReader, grid: TileGrid) -> list[Problem]:
         problems.append(Problem("band count", f"output {output_dataset.count}, tiles {grid.count}"))
     if set(output_dataset.dtypes) != {grid.dtype}:
         problems.append(Problem("data type", f"output {output_dataset.dtypes}, tiles {grid.dtype}"))
-    if any(not nodata_equal(v, grid.nodata) for v in output_dataset.nodatavals):
+    if any(not _nodata_equal(v, grid.nodata) for v in output_dataset.nodatavals):
         problems.append(Problem("nodata", f"output {output_dataset.nodatavals}, tiles {grid.nodata}"))
     return problems
 
@@ -305,7 +297,7 @@ def _as_unsigned_bits(data: np.ndarray) -> np.ndarray:
 
 
 def _check_pixels(
-    placed: Sequence[tuple[_TileHeader, int, int]], grid: TileGrid, output_dataset: DatasetReader
+    placed: Sequence[tuple[_TileHeader, int, int]], grid: _TileGrid, output_dataset: DatasetReader
 ) -> list[Problem]:
     """Compare every full-resolution pixel of the output with what the tiles hold there.
 
@@ -359,7 +351,7 @@ def _check_pixels(
     return problems
 
 
-def _grid_mismatch_reason(output_dataset: DatasetReader, grid: TileGrid) -> str | None:
+def _grid_mismatch_reason(output_dataset: DatasetReader, grid: _TileGrid) -> str | None:
     """Return why the output's pixels cannot be lined up with the tiles', or None.
 
     Args:
