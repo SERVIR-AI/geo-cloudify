@@ -217,11 +217,12 @@ def _tile_with(path, data, *, x=X0, y=Y0, nodata=0, overviews=None):
     return path
 
 
-def _random_tiles(tmp_path, *, nodata=0, gap=0):
+def _random_tiles(tmp_path, *, nodata=0, gap=0, dtype="uint8"):
     """Four tiles of different sizes, none a whole number of 512 blocks, with values 0 to 22.
 
     0 is common in the data, so it is both nodata and a real value. `gap` leaves that
-    many empty pixel columns between the west and east tiles.
+    many empty pixel columns between the west and east tiles. A float `dtype` gives
+    values with fractions, so float statistics are not whole numbers.
     """
     rng = np.random.default_rng(7)
     sizes = {"nw": (530, 600), "ne": (530, 311), "sw": (257, 600), "se": (257, 311)}
@@ -230,7 +231,11 @@ def _random_tiles(tmp_path, *, nodata=0, gap=0):
     origins = {"nw": (X0, Y0), "ne": (east_x, Y0), "sw": (X0, south_y), "se": (east_x, south_y)}
     tiles = []
     for name, (height, width) in sizes.items():
-        data = rng.integers(0, 23, size=(1, height, width), dtype="uint8")
+        if np.dtype(dtype).kind == "f":
+            data = rng.uniform(0, 23, size=(1, height, width)).astype(dtype)
+            data[data < 1] = 0  # keep 0 common, as in the integer tiles
+        else:
+            data = rng.integers(0, 23, size=(1, height, width), dtype=dtype)
         x, y = origins[name]
         tiles.append(_tile_with(tmp_path / f"{name}.tif", data, x=x, y=y, nodata=nodata))
     return tiles
@@ -416,10 +421,11 @@ def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     assert output == Path("merged.tif")
 
 
-def test_same_tiles_give_the_same_bytes(tmp_path):
-    tiles = _random_tiles(tmp_path)
-    first = merge_to_cog(tiles, tmp_path / "first.tif", "mode")
-    second = merge_to_cog(tiles, tmp_path / "second.tif", "mode")
+@pytest.mark.parametrize(("dtype", "method"), [("uint8", "mode"), ("float32", "average")])
+def test_same_tiles_give_the_same_bytes(tmp_path, dtype, method):
+    tiles = _random_tiles(tmp_path, dtype=dtype)
+    first = merge_to_cog(tiles, tmp_path / "first.tif", method)
+    second = merge_to_cog(tiles, tmp_path / "second.tif", method)
     assert hashlib.sha256(first.read_bytes()).hexdigest() == hashlib.sha256(second.read_bytes()).hexdigest()
 
 
