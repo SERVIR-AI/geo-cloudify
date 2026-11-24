@@ -250,9 +250,7 @@ def _pixel_offset(header: _TileHeader, ref: _TileHeader) -> tuple[int, int]:
     # Distance between the two origins, in pixels.
     col = (tile_transform.c - ref_transform.c) / ref_transform.a
     # ref_transform.e is negative, so a tile further north gets a negative row
-    row = (
-        tile_transform.f - ref_transform.f
-    ) / ref_transform.e
+    row = (tile_transform.f - ref_transform.f) / ref_transform.e
     # Each offset must be a whole number of pixels, within a tiny tolerance.
     for axis, offset in (("x", col), ("y", row)):
         if abs(offset - round(offset)) > _ALIGN_TOLERANCE:
