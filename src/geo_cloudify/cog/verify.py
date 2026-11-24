@@ -80,70 +80,6 @@ class MergeCheck:
         return not self.problems
 
 
-def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) -> MergeCheck:
-    """Check that `output` is a valid COG holding exactly the pixels of `tiles`.
-
-    The expected grid is the union of the tiles. The checks are:
-    - a valid COG (any `cog_validate` error or warning is a problem);
-    - overviews whose smallest level fits in one block (an image that fits in one
-      block needs none, and every band must have the same levels);
-    - CRS (compared as a CRS), transform (with a tiny float tolerance), size,
-      band count, data type and nodata equal to the tiles';
-    - no two tiles overlap;
-    - every pixel of every band, at full resolution, equals the value the tiles
-      hold at that place, or the fill value (the nodata, or 0 when there is none)
-      where no tile covers it. Values are compared by their bits, so NaN equals
-      NaN. Works for any real data type, one band window at a time.
-
-    Pixels are not compared when the tiles overlap, or when the output's size,
-    transform, band count or data type differs from the tiles'. Then a "pixels"
-    problem says "not compared" and why.
-
-    Args:
-        tiles: a list or tuple of one or more local paths: the tiles the output
-            was merged from.
-        output: a local path of the merged COG.
-
-    Returns:
-        A MergeCheck listing every problem found (empty when all checks pass).
-        A changed, missing or misplaced pixel gives one "pixels" problem per band
-        that differs, with how many pixels differ and the first few places.
-
-    Raises:
-        InvalidInputError: if `tiles` is empty, a single path instead of a list,
-            not a list or tuple, or holds an item that is not a string or path
-            object, a tile is not a local file, or the tiles hold complex numbers (the pixel
-            comparison does not support them).
-        TileMismatchError: if the tiles do not share one grid, naming the tile and
-            the field ("crs", "orientation", "pixel size", "grid alignment", "band
-            count", "data type", "nodata" or "mask").
-        GeoCloudifyError: if GDAL cannot open or read a tile or the output, with
-            the GDAL or rasterio error as its cause.
-    """
-    grid, placed = _validate_and_place_tiles(tiles)
-    if np.dtype(grid.dtype).kind == "c":
-        raise InvalidInputError(f"pixel comparison is not supported for complex data ({grid.dtype})")
-    problems: list[Problem] = []
-    try:
-        with rasterio.open(output) as output_dataset:
-            # Checks on the output file itself: COG validity, overviews and grid fields.
-            problems += _check_cog_validity(output)
-            problems += _check_overviews(output_dataset, output)
-            problems += _check_grid(output_dataset, grid)
-            # Overlapping tiles are reported as a problem here, not raised. With an
-            # overlap there is no one expected value, so pixels are not compared.
-            try:
-                _check_no_overlap(placed)
-            except TileMismatchError as error:
-                problems.append(Problem("overlap", str(error)))
-                problems.append(Problem("pixels", "not compared: tiles overlap"))
-            else:
-                problems += _check_pixels(placed, grid, output_dataset)
-    except _GDAL_ERRORS as error:
-        raise GeoCloudifyError(f"output {output}: cannot check against its tiles: {error}") from error
-    return MergeCheck(output=output, problems=tuple(problems))
-
-
 def _check_cog_validity(output: str | PathLike) -> list[Problem]:
     """Return a problem for each error and each warning `cog_validate` gives.
 
@@ -252,6 +188,28 @@ def _check_grid(output_dataset: DatasetReader, grid: _TileGrid) -> list[Problem]
     return problems
 
 
+def _grid_mismatch_reason(output_dataset: DatasetReader, grid: _TileGrid) -> str | None:
+    """Return why the output's pixels cannot be lined up with the tiles', or None.
+
+    Args:
+        output_dataset: the open output.
+        grid: the tiles' union grid.
+
+    Returns:
+        A short plain reason when the size, transform, band count or data type
+        differs from the grid; None when they all match.
+    """
+    if (output_dataset.width, output_dataset.height) != (grid.width, grid.height):
+        return f"output is {output_dataset.width} x {output_dataset.height}, tiles cover {grid.width} x {grid.height}"
+    if not _same_transform(output_dataset.transform, grid.transform):
+        return f"output transform {tuple(output_dataset.transform)[:6]}, tiles {tuple(grid.transform)[:6]}"
+    if output_dataset.count != grid.count:
+        return f"output has {output_dataset.count} bands, tiles {grid.count}"
+    if set(output_dataset.dtypes) != {grid.dtype}:
+        return f"output data type {output_dataset.dtypes}, tiles {grid.dtype}"
+    return None
+
+
 def _windows(dataset: DatasetReader) -> Iterator[Window]:
     """Yield block-aligned windows that cover `dataset`, each about `_MAX_WINDOW_PIXELS` or less.
 
@@ -295,83 +253,6 @@ def _as_unsigned_bits(data: np.ndarray) -> np.ndarray:
         data = np.where(np.isnan(data), np.array(np.nan, dtype=data.dtype), data)
     # Read the same bytes as unsigned integers of the same width.
     return data.view(f"u{data.dtype.itemsize}")
-
-
-def _check_pixels(
-    placed: Sequence[tuple[_TileHeader, int, int]], grid: _TileGrid, output_dataset: DatasetReader
-) -> list[Problem]:
-    """Compare every full-resolution pixel of the output with what the tiles hold there.
-
-    Args:
-        placed: each tile's header with its column and row on the union grid,
-            as returned by `_validate_and_place_tiles`; no two tiles overlap.
-        grid: the tiles' union grid, of a real data type.
-        output_dataset: the open output.
-
-    Returns:
-        One "pixels" problem per band that differs, giving how many pixels
-        differ and up to `_MAX_LISTED_PIXELS` of them as column, row, expected
-        and found value. A single "pixels" problem saying "not compared" when the
-        output's size, transform, band count or data type differs from the
-        tiles'. Empty when every pixel matches.
-
-    Raises:
-        rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
-        rasterio.errors.RasterioError: if GDAL cannot read the pixels of a tile or the output.
-    """
-    grid_mismatch = _grid_mismatch_reason(output_dataset, grid)
-    if grid_mismatch:
-        return [Problem("pixels", f"not compared: {grid_mismatch}")]
-    dtype = np.dtype(grid.dtype)
-    fill = 0 if grid.nodata is None else grid.nodata
-    # ExitStack keeps every tile open until the comparison ends.
-    with ExitStack() as stack:
-        placed_datasets = [(stack.enter_context(rasterio.open(h.tile)), col, row) for h, col, row in placed]
-        windows = list(_windows(output_dataset))
-        problems = []
-        for band in range(1, grid.count + 1):
-            differing_count = 0
-            first_differences: list[str] = []
-            for window in windows:
-                # Start the window as all fill, then paste in each tile that reaches it.
-                expected = np.full((window.height, window.width), fill, dtype=dtype)
-                for tile_dataset, col, row in placed_datasets:
-                    _paste(expected, window, tile_dataset, band, col, row)
-                found = output_dataset.read(band, window=window)
-                # True wherever the output differs from what is expected.
-                differs = _as_unsigned_bits(expected) != _as_unsigned_bits(found)
-                differing_count += int(np.count_nonzero(differs))
-                # Keep the first few differing places for the message.
-                if len(first_differences) < _MAX_LISTED_PIXELS and differing_count:
-                    first_differences += _describe_first_differences(differs, expected, found, window, _MAX_LISTED_PIXELS - len(first_differences))
-            if differing_count:
-                noun = "pixel differs" if differing_count == 1 else "pixels differ"
-                problems.append(Problem(
-                    "pixels", f"band {band}: {differing_count} {noun}; first: {'; '.join(first_differences)}"
-                ))
-    return problems
-
-
-def _grid_mismatch_reason(output_dataset: DatasetReader, grid: _TileGrid) -> str | None:
-    """Return why the output's pixels cannot be lined up with the tiles', or None.
-
-    Args:
-        output_dataset: the open output.
-        grid: the tiles' union grid.
-
-    Returns:
-        A short plain reason when the size, transform, band count or data type
-        differs from the grid; None when they all match.
-    """
-    if (output_dataset.width, output_dataset.height) != (grid.width, grid.height):
-        return f"output is {output_dataset.width} x {output_dataset.height}, tiles cover {grid.width} x {grid.height}"
-    if not _same_transform(output_dataset.transform, grid.transform):
-        return f"output transform {tuple(output_dataset.transform)[:6]}, tiles {tuple(grid.transform)[:6]}"
-    if output_dataset.count != grid.count:
-        return f"output has {output_dataset.count} bands, tiles {grid.count}"
-    if set(output_dataset.dtypes) != {grid.dtype}:
-        return f"output data type {output_dataset.dtypes}, tiles {grid.dtype}"
-    return None
 
 
 def _paste(
@@ -433,3 +314,122 @@ def _describe_first_differences(
         if len(places) >= limit:
             break
     return places
+
+
+def _check_pixels(
+    placed: Sequence[tuple[_TileHeader, int, int]], grid: _TileGrid, output_dataset: DatasetReader
+) -> list[Problem]:
+    """Compare every full-resolution pixel of the output with what the tiles hold there.
+
+    Args:
+        placed: each tile's header with its column and row on the union grid,
+            as returned by `_validate_and_place_tiles`; no two tiles overlap.
+        grid: the tiles' union grid, of a real data type.
+        output_dataset: the open output.
+
+    Returns:
+        One "pixels" problem per band that differs, giving how many pixels
+        differ and up to `_MAX_LISTED_PIXELS` of them as column, row, expected
+        and found value. A single "pixels" problem saying "not compared" when the
+        output's size, transform, band count or data type differs from the
+        tiles'. Empty when every pixel matches.
+
+    Raises:
+        rasterio.errors.RasterioIOError: if GDAL cannot open a tile.
+        rasterio.errors.RasterioError: if GDAL cannot read the pixels of a tile or the output.
+    """
+    grid_mismatch = _grid_mismatch_reason(output_dataset, grid)
+    if grid_mismatch:
+        return [Problem("pixels", f"not compared: {grid_mismatch}")]
+    dtype = np.dtype(grid.dtype)
+    fill = 0 if grid.nodata is None else grid.nodata
+    # ExitStack keeps every tile open until the comparison ends.
+    with ExitStack() as stack:
+        placed_datasets = [(stack.enter_context(rasterio.open(h.tile)), col, row) for h, col, row in placed]
+        windows = list(_windows(output_dataset))
+        problems = []
+        for band in range(1, grid.count + 1):
+            differing_count = 0
+            first_differences: list[str] = []
+            for window in windows:
+                # Start the window as all fill, then paste in each tile that reaches it.
+                expected = np.full((window.height, window.width), fill, dtype=dtype)
+                for tile_dataset, col, row in placed_datasets:
+                    _paste(expected, window, tile_dataset, band, col, row)
+                found = output_dataset.read(band, window=window)
+                # True wherever the output differs from what is expected.
+                differs = _as_unsigned_bits(expected) != _as_unsigned_bits(found)
+                differing_count += int(np.count_nonzero(differs))
+                # Keep the first few differing places for the message.
+                if len(first_differences) < _MAX_LISTED_PIXELS and differing_count:
+                    first_differences += _describe_first_differences(differs, expected, found, window, _MAX_LISTED_PIXELS - len(first_differences))
+            if differing_count:
+                noun = "pixel differs" if differing_count == 1 else "pixels differ"
+                problems.append(Problem(
+                    "pixels", f"band {band}: {differing_count} {noun}; first: {'; '.join(first_differences)}"
+                ))
+    return problems
+
+
+def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) -> MergeCheck:
+    """Check that `output` is a valid COG holding exactly the pixels of `tiles`.
+
+    The expected grid is the union of the tiles. The checks are:
+    - a valid COG (any `cog_validate` error or warning is a problem);
+    - overviews whose smallest level fits in one block (an image that fits in one
+      block needs none, and every band must have the same levels);
+    - CRS (compared as a CRS), transform (with a tiny float tolerance), size,
+      band count, data type and nodata equal to the tiles';
+    - no two tiles overlap;
+    - every pixel of every band, at full resolution, equals the value the tiles
+      hold at that place, or the fill value (the nodata, or 0 when there is none)
+      where no tile covers it. Values are compared by their bits, so NaN equals
+      NaN. Works for any real data type, one band window at a time.
+
+    Pixels are not compared when the tiles overlap, or when the output's size,
+    transform, band count or data type differs from the tiles'. Then a "pixels"
+    problem says "not compared" and why.
+
+    Args:
+        tiles: a list or tuple of one or more local paths: the tiles the output
+            was merged from.
+        output: a local path of the merged COG.
+
+    Returns:
+        A MergeCheck listing every problem found (empty when all checks pass).
+        A changed, missing or misplaced pixel gives one "pixels" problem per band
+        that differs, with how many pixels differ and the first few places.
+
+    Raises:
+        InvalidInputError: if `tiles` is empty, a single path instead of a list,
+            not a list or tuple, or holds an item that is not a string or path
+            object, a tile is not a local file, or the tiles hold complex numbers (the pixel
+            comparison does not support them).
+        TileMismatchError: if the tiles do not share one grid, naming the tile and
+            the field ("crs", "orientation", "pixel size", "grid alignment", "band
+            count", "data type", "nodata" or "mask").
+        GeoCloudifyError: if GDAL cannot open or read a tile or the output, with
+            the GDAL or rasterio error as its cause.
+    """
+    grid, placed = _validate_and_place_tiles(tiles)
+    if np.dtype(grid.dtype).kind == "c":
+        raise InvalidInputError(f"pixel comparison is not supported for complex data ({grid.dtype})")
+    problems: list[Problem] = []
+    try:
+        with rasterio.open(output) as output_dataset:
+            # Checks on the output file itself: COG validity, overviews and grid fields.
+            problems += _check_cog_validity(output)
+            problems += _check_overviews(output_dataset, output)
+            problems += _check_grid(output_dataset, grid)
+            # Overlapping tiles are reported as a problem here, not raised. With an
+            # overlap there is no one expected value, so pixels are not compared.
+            try:
+                _check_no_overlap(placed)
+            except TileMismatchError as error:
+                problems.append(Problem("overlap", str(error)))
+                problems.append(Problem("pixels", "not compared: tiles overlap"))
+            else:
+                problems += _check_pixels(placed, grid, output_dataset)
+    except _GDAL_ERRORS as error:
+        raise GeoCloudifyError(f"output {output}: cannot check against its tiles: {error}") from error
+    return MergeCheck(output=output, problems=tuple(problems))
