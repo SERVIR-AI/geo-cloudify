@@ -106,7 +106,7 @@ class _TileGrid:
 
 @dataclass(frozen=True)
 class _TileHeader:
-    """What `_find_union_grid` needs from one tile's header.
+    """What `_validate_and_place_tiles` needs from one tile's header.
 
     Attributes:
         tile: the tile as the caller gave it (a path, as a string).
@@ -259,8 +259,8 @@ def _pixel_offset(header: _TileHeader, ref: _TileHeader) -> tuple[int, int]:
     return round(col), round(row)
 
 
-def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
-    """Check that tiles share one grid and return the grid that covers them all.
+def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGrid, list[tuple[_TileHeader, int, int]]]:
+    """Check that tiles share one grid, and return that grid and where each tile sits on it.
 
     The first tile is the reference. Every other tile must have the same CRS
     (compared as a CRS, not as text), pixel size, data type, band count and
@@ -275,39 +275,30 @@ def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
             A single path given as a bare string or path object is refused.
 
     Returns:
-        The union grid: shared CRS, dtype, band count and nodata, and the
-        transform, width and height that cover every tile.
+        The union grid (shared CRS, dtype, band count and nodata, and the
+        transform, width and height that cover every tile), and for each tile in
+        the order given: its header and the column and row of its top-left pixel
+        on the union grid (0 or more).
 
     Raises:
         InvalidInputError: if `tiles` is empty, is a single string or path object
-            instead of a sequence of them, or a tile is not a local file.
+            instead of a list, is not a list or tuple, or holds an item that is
+            not a string or path object, or a tile is not a local file.
         TileMismatchError: naming the first tile that differs and the field
             ("crs", "orientation", "pixel size", "grid alignment", "band count",
             "data type", "nodata" or "mask").
         GeoCloudifyError: if GDAL cannot open a tile, with the GDAL error as its cause.
     """
-    return _validate_and_place_tiles(tiles)[0]
-
-
-def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGrid, list[tuple[_TileHeader, int, int]]]:
-    """Run the `_find_union_grid` checks and also say where each tile sits on the union grid.
-
-    Args:
-        tiles: a list or tuple of one or more local paths.
-
-    Returns:
-        The union grid, and for each tile in the order given: its header and the
-        column and row of its top-left pixel on the union grid (0 or more).
-
-    Raises:
-        InvalidInputError: as `_find_union_grid`.
-        TileMismatchError: as `_find_union_grid`.
-        GeoCloudifyError: if GDAL cannot open a tile.
-    """
     if isinstance(tiles, (str, bytes, PathLike)):
         raise InvalidInputError(f"tiles must be a list of paths, not a single path: {tiles!r}")
+    # A set or generator has no first tile, and a generator can be read only once.
+    if not isinstance(tiles, (list, tuple)):
+        raise InvalidInputError(f"tiles must be a list or tuple of paths, not a {type(tiles).__name__}")
     if not tiles:
         raise InvalidInputError("no tiles given")
+    for tile in tiles:
+        if not isinstance(tile, (str, PathLike)):
+            raise InvalidInputError(f"tiles must be paths (str or path objects), got {tile!r}")
     headers = [_read_header(tile) for tile in tiles]
     ref = headers[0]
     offsets_from_ref = []
@@ -703,8 +694,9 @@ def merge_to_cog(
     Raises:
         InvalidInputError: if `overview_resampling` is not one of the allowed values,
             `compression_codec` is lossy or unknown, `blocksize` is not allowed,
-            `tiles` is empty or a single path instead of a list, a tile is not a
-            local file, or the tiles leave places uncovered and have no nodata
+            `tiles` is empty, a single path instead of a list, not a list or
+            tuple, or holds an item that is not a string or path object, a tile
+            is not a local file, or the tiles leave places uncovered and have no nodata
             (the message gives the number of uncovered pixels). Nothing is written.
         OutputExistsError: if `output` already exists. It is left untouched.
         TileMismatchError: naming the tile and the field when tiles differ (field
