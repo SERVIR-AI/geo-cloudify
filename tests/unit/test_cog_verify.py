@@ -26,9 +26,19 @@ def _write(path, data, *, x=X0, y=Y0, nodata=0, crs="EPSG:32648"):
     """Write `data` (bands, rows, cols) as a tiled GeoTIFF at (x, y) and return its path."""
     count, height, width = data.shape
     with rasterio.open(
-        path, "w", driver="GTiff", width=width, height=height, count=count, dtype=data.dtype,
-        crs=crs, transform=from_origin(x, y, PIXEL, PIXEL), nodata=nodata,
-        tiled=True, blockxsize=256, blockysize=256,
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=count,
+        dtype=data.dtype,
+        crs=crs,
+        transform=from_origin(x, y, PIXEL, PIXEL),
+        nodata=nodata,
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
     ) as dst:
         dst.write(data)
     return path
@@ -154,8 +164,7 @@ def test_overviews_that_stop_before_one_block_fail(tmp_path, tiles, merged):
         dst.build_overviews([2], Resampling.nearest)
     short = tmp_path / "short.tif"
     # 128-pixel blocks: one overview level (456 x 394) is far from one block.
-    rasterio.shutil.copy(str(with_one_level), str(short), driver="COG",
-                         BLOCKSIZE=128, OVERVIEWS="FORCE_USE_EXISTING")
+    rasterio.shutil.copy(str(with_one_level), str(short), driver="COG", BLOCKSIZE=128, OVERVIEWS="FORCE_USE_EXISTING")
     with rasterio.open(short) as out:
         assert out.overviews(1) == [2]
     check = check_merged_cog(tiles, short)

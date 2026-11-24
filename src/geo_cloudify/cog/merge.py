@@ -20,8 +20,8 @@ from pathlib import Path
 
 import rasterio
 import rasterio.dtypes
-import rasterio.shutil
 import rasterio.errors
+import rasterio.shutil
 from rasterio._err import CPLE_BaseError
 from rasterio.crs import CRS
 from rasterio.enums import MaskFlags
@@ -226,7 +226,8 @@ def _check_own_header(header: _TileHeader) -> None:
         raise TileMismatchError(header.tile, "nodata", f"bands differ: {header.nodatavals}")
     if header.has_mask:
         raise TileMismatchError(
-            header.tile, "mask",
+            header.tile,
+            "mask",
             "the tile marks empty pixels with a mask, not a nodata value or an alpha band",
         )
 
@@ -248,12 +249,16 @@ def _pixel_offset(header: _TileHeader, ref: _TileHeader) -> tuple[int, int]:
     tile_transform, ref_transform = header.transform, ref.transform
     # Distance between the two origins, in pixels.
     col = (tile_transform.c - ref_transform.c) / ref_transform.a
-    row = (tile_transform.f - ref_transform.f) / ref_transform.e  # ref_transform.e is negative, so a tile further north gets a negative row
+    # ref_transform.e is negative, so a tile further north gets a negative row
+    row = (
+        tile_transform.f - ref_transform.f
+    ) / ref_transform.e
     # Each offset must be a whole number of pixels, within a tiny tolerance.
     for axis, offset in (("x", col), ("y", row)):
         if abs(offset - round(offset)) > _ALIGN_TOLERANCE:
             raise TileMismatchError(
-                header.tile, "grid alignment",
+                header.tile,
+                "grid alignment",
                 f"origin is {offset:.6f} pixels from {ref.tile} along {axis}, not a whole number",
             )
     return round(col), round(row)
@@ -308,19 +313,21 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGri
         if header.crs != ref.crs:
             raise TileMismatchError(header.tile, "crs", f"{header.crs} vs {ref.crs} in {ref.tile}")
         tile_transform, ref_transform = header.transform, ref.transform
-        if not (math.isclose(tile_transform.a, ref_transform.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
-                and math.isclose(tile_transform.e, ref_transform.e, rel_tol=_PIXEL_SIZE_TOLERANCE)):
+        if not (
+            math.isclose(tile_transform.a, ref_transform.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
+            and math.isclose(tile_transform.e, ref_transform.e, rel_tol=_PIXEL_SIZE_TOLERANCE)
+        ):
             raise TileMismatchError(
-                header.tile, "pixel size", f"({tile_transform.a}, {-tile_transform.e}) vs ({ref_transform.a}, {-ref_transform.e}) in {ref.tile}"
+                header.tile,
+                "pixel size",
+                f"({tile_transform.a}, {-tile_transform.e}) vs ({ref_transform.a}, {-ref_transform.e}) in {ref.tile}",
             )
         if len(header.dtypes) != len(ref.dtypes):
             raise TileMismatchError(
                 header.tile, "band count", f"{len(header.dtypes)} vs {len(ref.dtypes)} in {ref.tile}"
             )
         if header.dtypes[0] != ref.dtypes[0]:
-            raise TileMismatchError(
-                header.tile, "data type", f"{header.dtypes[0]} vs {ref.dtypes[0]} in {ref.tile}"
-            )
+            raise TileMismatchError(header.tile, "data type", f"{header.dtypes[0]} vs {ref.dtypes[0]} in {ref.tile}")
         if not _nodata_equal(header.nodatavals[0], ref.nodatavals[0]):
             raise TileMismatchError(
                 header.tile, "nodata", f"{header.nodatavals[0]} vs {ref.nodatavals[0]} in {ref.tile}"
@@ -339,7 +346,9 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGri
     northmost_header = next(header for (_, row), header in zip(offsets_from_ref, headers, strict=True) if row == top)
     grid = _TileGrid(
         crs=ref.crs,
-        transform=Affine(ref.transform.a, 0.0, westmost_header.transform.c, 0.0, ref.transform.e, northmost_header.transform.f),
+        transform=Affine(
+            ref.transform.a, 0.0, westmost_header.transform.c, 0.0, ref.transform.e, northmost_header.transform.f
+        ),
         width=right - left,
         height=bottom - top,
         dtype=ref.dtypes[0],
@@ -365,8 +374,12 @@ def _check_no_overlap(placed: Sequence[tuple[_TileHeader, int, int]]) -> None:
     # both the column axis and the row axis.
     for index, (header, col, row) in enumerate(placed):
         for other, other_col, other_row in placed[:index]:
-            if (col < other_col + other.width and other_col < col + header.width
-                    and row < other_row + other.height and other_row < row + header.height):
+            if (
+                col < other_col + other.width
+                and other_col < col + header.width
+                and row < other_row + other.height
+                and other_row < row + header.height
+            ):
                 raise TileMismatchError(header.tile, "overlap", f"its pixels overlap {other.tile}")
 
 
@@ -429,15 +442,17 @@ def _read_band_metadata(tile: str | PathLike) -> tuple[dict[str, str], list[_Ban
                     colormap = dataset.colormap(band)
                 except ValueError:  # rasterio raises this when the band has no colour table
                     colormap = None
-                bands.append(_BandMetadata(
-                    color_interp=dataset.colorinterp[band - 1].name.capitalize(),
-                    colormap=colormap,
-                    description=dataset.descriptions[band - 1] or "",
-                    scale=dataset.scales[band - 1],
-                    offset=dataset.offsets[band - 1],
-                    units=dataset.units[band - 1] or "",
-                    tags=_without_statistics(dataset.tags(band)),
-                ))
+                bands.append(
+                    _BandMetadata(
+                        color_interp=dataset.colorinterp[band - 1].name.capitalize(),
+                        colormap=colormap,
+                        description=dataset.descriptions[band - 1] or "",
+                        scale=dataset.scales[band - 1],
+                        offset=dataset.offsets[band - 1],
+                        units=dataset.units[band - 1] or "",
+                        tags=_without_statistics(dataset.tags(band)),
+                    )
+                )
             return _without_statistics(dataset.tags()), bands
     except _GDAL_ERRORS as error:
         raise GeoCloudifyError(f"tile {tile}: cannot read the band settings: {error}") from error
@@ -590,9 +605,13 @@ def _validate_cog_settings(compression_codec: str, blocksize: int) -> tuple[str,
         raise InvalidInputError(f"compression_codec must be a codec name, got {compression_codec!r}")
     codec = compression_codec.upper()
     if codec in _LOSSY_CODECS:
-        raise InvalidInputError(f"compression_codec {compression_codec!r} is lossy; use one of DEFLATE, LZW, ZSTD, LZMA or NONE")
+        raise InvalidInputError(
+            f"compression_codec {compression_codec!r} is lossy; use one of DEFLATE, LZW, ZSTD, LZMA or NONE"
+        )
     if codec not in _COG_COMPRESSION_CODECS:
-        raise InvalidInputError(f"compression_codec must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compression_codec!r}")
+        raise InvalidInputError(
+            f"compression_codec must be one of DEFLATE, LZW, ZSTD, LZMA or NONE, got {compression_codec!r}"
+        )
     if not isinstance(blocksize, numbers.Integral) or isinstance(blocksize, bool):
         raise InvalidInputError(f"BLOCKSIZE must be an integer, got {blocksize!r}")
     blocksize = int(blocksize)
@@ -743,7 +762,12 @@ def merge_to_cog(
     }
     logger.info(
         "merging %d tiles into %s: compression_codec=%s blocksize=%d overview_resampling=%s num_threads=%s",
-        len(placed), output, codec, blocksize, overview_resampling, options["NUM_THREADS"],
+        len(placed),
+        output,
+        codec,
+        blocksize,
+        overview_resampling,
+        options["NUM_THREADS"],
     )
     try:
         output.parent.mkdir(parents=True, exist_ok=True)

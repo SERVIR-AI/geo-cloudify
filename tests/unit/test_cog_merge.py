@@ -11,27 +11,52 @@ import rasterio
 import rasterio.errors
 import rasterio.shutil
 from rasterio.crs import CRS
-from rasterio.io import DatasetReader
 from rasterio.enums import ColorInterp, Resampling
+from rasterio.io import DatasetReader
 from rasterio.transform import Affine, from_origin
 from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import (
-    GeoCloudifyError, InvalidInputError, _TileGrid, TileMismatchError, _validate_and_place_tiles, merge_to_cog,
+    GeoCloudifyError,
+    InvalidInputError,
+    TileMismatchError,
+    _TileGrid,
+    _validate_and_place_tiles,
+    merge_to_cog,
 )
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
 X0, Y0, PIXEL = -1260450.0, 3413550.0, 30.0
 
 
-def _tile(path, *, x=X0, y=Y0, width=40, height=40, pixel=PIXEL, crs="EPSG:32648",
-          dtype="uint8", count=1, nodata=0, transform=None):
+def _tile(
+    path,
+    *,
+    x=X0,
+    y=Y0,
+    width=40,
+    height=40,
+    pixel=PIXEL,
+    crs="EPSG:32648",
+    dtype="uint8",
+    count=1,
+    nodata=0,
+    transform=None,
+):
     """Write a small GeoTIFF tile and return its path."""
     transform = transform or from_origin(x, y, pixel, pixel)
     with rasterio.open(
-        path, "w", driver="GTiff", width=width, height=height, count=count, dtype=dtype,
-        crs=crs, transform=transform, nodata=nodata,
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=count,
+        dtype=dtype,
+        crs=crs,
+        transform=transform,
+        nodata=nodata,
     ) as dst:
         dst.write(np.ones((count, height, width), dtype=dtype))
     return path
@@ -45,8 +70,7 @@ def _four_tiles(tmp_path, **last_tile_kwargs):
         _tile(tmp_path / "nw.tif", width=40, height=40),
         _tile(tmp_path / "ne.tif", x=east_x, width=23, height=40),
         _tile(tmp_path / "sw.tif", y=south_y, width=40, height=17),
-        _tile(tmp_path / "se.tif", **{"x": east_x, "y": south_y, "width": 23, "height": 17,
-                                      **last_tile_kwargs}),
+        _tile(tmp_path / "se.tif", **{"x": east_x, "y": south_y, "width": 23, "height": 17, **last_tile_kwargs}),
     ]
 
 
@@ -134,8 +158,7 @@ def test_empty_tile_list_is_refused():
     [
         ({"crs": "EPSG:32647"}, "crs"),
         ({"pixel": 20.0}, "pixel size"),
-        ({"transform": Affine(PIXEL, 0.0, X0 + 40 * PIXEL, 0.0, -20.0, Y0 - 40 * PIXEL)},
-         "pixel size"),
+        ({"transform": Affine(PIXEL, 0.0, X0 + 40 * PIXEL, 0.0, -20.0, Y0 - 40 * PIXEL)}, "pixel size"),
         ({"x": X0 + 40 * PIXEL + 10.0}, "grid alignment"),
         ({"y": Y0 - 40 * PIXEL - 15.0}, "grid alignment"),
         ({"dtype": "uint16"}, "data type"),
@@ -163,8 +186,7 @@ def test_first_tile_without_nodata_and_second_with_is_refused(tmp_path):
 
 def test_nan_and_number_nodata_are_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10, dtype="float32", nodata=float("nan"))
-    b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10,
-              dtype="float32", nodata=-9999)
+    b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, dtype="float32", nodata=-9999)
     with pytest.raises(TileMismatchError, match="nodata"):
         _validate_and_place_tiles([a, b])
 
@@ -207,9 +229,19 @@ def _tile_with(path, data, *, x=X0, y=Y0, nodata=0, overviews=None):
     """
     count, height, width = data.shape
     with rasterio.open(
-        path, "w", driver="GTiff", width=width, height=height, count=count, dtype=data.dtype,
-        crs="EPSG:32648", transform=from_origin(x, y, PIXEL, PIXEL), nodata=nodata,
-        tiled=True, blockxsize=256, blockysize=256,
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=count,
+        dtype=data.dtype,
+        crs="EPSG:32648",
+        transform=from_origin(x, y, PIXEL, PIXEL),
+        nodata=nodata,
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
     ) as dst:
         dst.write(data)
         if overviews is not None:
@@ -474,14 +506,17 @@ def test_scale_offset_and_units_are_kept(tmp_path):
         assert out.units == ("degree Celsius",)
 
 
-@pytest.mark.parametrize(("field", "change"), [
-    ("scale", lambda dst: setattr(dst, "scales", (0.5,))),
-    ("offset", lambda dst: setattr(dst, "offsets", (-3.0,))),
-    ("units", lambda dst: setattr(dst, "units", ("m",))),
-    ("description", lambda dst: dst.set_band_description(1, "other")),
-    ("colour interpretation", lambda dst: setattr(dst, "colorinterp", [ColorInterp.red])),
-    ("colour table", lambda dst: dst.write_colormap(1, {1: (200, 0, 0, 255)})),
-])
+@pytest.mark.parametrize(
+    ("field", "change"),
+    [
+        ("scale", lambda dst: setattr(dst, "scales", (0.5,))),
+        ("offset", lambda dst: setattr(dst, "offsets", (-3.0,))),
+        ("units", lambda dst: setattr(dst, "units", ("m",))),
+        ("description", lambda dst: dst.set_band_description(1, "other")),
+        ("colour interpretation", lambda dst: setattr(dst, "colorinterp", [ColorInterp.red])),
+        ("colour table", lambda dst: dst.write_colormap(1, {1: (200, 0, 0, 255)})),
+    ],
+)
 def test_band_setting_that_differs_is_refused_naming_tile_and_field(tmp_path, field, change):
     tiles = _random_tiles(tmp_path)
     with rasterio.open(tiles[3], "r+") as dst:
@@ -512,35 +547,56 @@ def test_real_gmw_tiles_merge(tmp_path):
 
 # --- settings: defaults, lossless codecs only -------------------------------------------
 
+
 def test_defaults_are_used_and_logged(tmp_path, caplog):
     tiles = _random_tiles(tmp_path)
     with caplog.at_level("INFO", logger="geo_cloudify.cog.merge"):
         merge_to_cog(tiles, tmp_path / "merged.tif", "mode")
-    lines = [r.getMessage() for r in caplog.records
-             if r.name == "geo_cloudify.cog.merge" and r.levelname == "INFO"]
+    lines = [r.getMessage() for r in caplog.records if r.name == "geo_cloudify.cog.merge" and r.levelname == "INFO"]
     assert len(lines) == 1
     assert "DEFLATE" in lines[0] and "512" in lines[0] and "mode" in lines[0]
 
 
-@pytest.mark.parametrize(("compress", "blocksize", "codec"), [
-    ("ZSTD", 256, "zstd"), ("lzw", 1024, "lzw"), ("Deflate", 128, "deflate"),
-])
+@pytest.mark.parametrize(
+    ("compress", "blocksize", "codec"),
+    [
+        ("ZSTD", 256, "zstd"),
+        ("lzw", 1024, "lzw"),
+        ("Deflate", 128, "deflate"),
+    ],
+)
 def test_given_compress_and_blocksize_reach_the_output(tmp_path, caplog, compress, blocksize, codec):
     tiles = _random_tiles(tmp_path)
     with caplog.at_level("INFO", logger="geo_cloudify.cog.merge"):
-        output = merge_to_cog(tiles, tmp_path / "merged.tif", "nearest",
-                              compression_codec=compress, blocksize=blocksize)
+        output = merge_to_cog(
+            tiles, tmp_path / "merged.tif", "nearest", compression_codec=compress, blocksize=blocksize
+        )
     _assert_tiles_placed(output, tiles)
     with rasterio.open(output) as out:
         assert out.compression.name == codec
         assert out.block_shapes[0] == (blocksize, blocksize)
-    assert any(compress.upper() in r.getMessage() and str(blocksize) in r.getMessage()
-               for r in caplog.records if r.name == "geo_cloudify.cog.merge")
+    assert any(
+        compress.upper() in r.getMessage() and str(blocksize) in r.getMessage()
+        for r in caplog.records
+        if r.name == "geo_cloudify.cog.merge"
+    )
 
 
-@pytest.mark.parametrize("compress", [
-    "JPEG", "jpeg", "WEBP", "Webp", "LERC", "lerc", "LERC_DEFLATE", "lerc_deflate", "LERC_ZSTD", "Lerc_Zstd",
-])
+@pytest.mark.parametrize(
+    "compress",
+    [
+        "JPEG",
+        "jpeg",
+        "WEBP",
+        "Webp",
+        "LERC",
+        "lerc",
+        "LERC_DEFLATE",
+        "lerc_deflate",
+        "LERC_ZSTD",
+        "Lerc_Zstd",
+    ],
+)
 def test_lossy_codecs_are_refused_before_writing(tmp_path, compress):
     tiles = _random_tiles(tmp_path)
     out_dir = tmp_path / "out"
@@ -586,6 +642,7 @@ def test_bad_numpy_block_size_is_refused_before_writing(tmp_path, blocksize):
 
 # --- statistics are computed for the merged image -----------------------------------------
 
+
 def test_statistics_are_computed_for_the_merged_image_not_copied(tmp_path):
     low = np.zeros((1, 300, 300), dtype="uint8")
     low[:, :, 1:] = np.random.default_rng(3).integers(1, 4, size=(1, 300, 299), dtype="uint8")
@@ -594,8 +651,15 @@ def test_statistics_are_computed_for_the_merged_image_not_copied(tmp_path):
     a = _tile_with(tmp_path / "a.tif", low)
     b = _tile_with(tmp_path / "b.tif", high, x=X0 + 300 * PIXEL)
     with rasterio.open(a, "r+") as dst:
-        dst.update_tags(1, STATISTICS_MINIMUM="0", STATISTICS_MAXIMUM="3", STATISTICS_MEAN="1.5",
-                        STATISTICS_STDDEV="1", STATISTICS_VALID_PERCENT="100", CLASSES="1-22")
+        dst.update_tags(
+            1,
+            STATISTICS_MINIMUM="0",
+            STATISTICS_MAXIMUM="3",
+            STATISTICS_MEAN="1.5",
+            STATISTICS_STDDEV="1",
+            STATISTICS_VALID_PERCENT="100",
+            CLASSES="1-22",
+        )
         dst.update_tags(STATISTICS_MAXIMUM="3", SOURCE="test")
     out_dir = tmp_path / "out"
     output = merge_to_cog([a, b], out_dir / "merged.tif", "mode")
@@ -613,11 +677,11 @@ def test_statistics_are_computed_for_the_merged_image_not_copied(tmp_path):
 def _aux_xml(tile, nodata):
     """Write a `<tile>.aux.xml` next to `tile` holding statistics and a nodata value."""
     Path(f"{tile}.aux.xml").write_text(
-        "<PAMDataset>\n  <PAMRasterBand band=\"1\">\n"
+        '<PAMDataset>\n  <PAMRasterBand band="1">\n'
         f"    <NoDataValue>{nodata}</NoDataValue>\n"
         "    <Metadata>\n"
-        "      <MDI key=\"STATISTICS_MAXIMUM\">3</MDI>\n"
-        "      <MDI key=\"STATISTICS_MINIMUM\">1</MDI>\n"
+        '      <MDI key="STATISTICS_MAXIMUM">3</MDI>\n'
+        '      <MDI key="STATISTICS_MINIMUM">1</MDI>\n'
         "    </Metadata>\n  </PAMRasterBand>\n</PAMDataset>\n"
     )
 
@@ -682,6 +746,7 @@ def test_nodata_stored_only_in_an_aux_xml_still_reaches_the_output(tmp_path):
 
 # --- holes with no nodata ----------------------------------------------------------------
 
+
 def test_hole_without_nodata_is_refused_before_writing(tmp_path):
     tiles = _random_tiles(tmp_path, nodata=None, gap=5)
     out_dir = tmp_path / "out"
@@ -699,6 +764,7 @@ def test_hole_count_for_a_missing_corner_tile(tmp_path):
 
 # --- tiles with an internal mask ----------------------------------------------------------
 
+
 def _masked_tile(path, *, x=X0):
     """Write a tile with an internal per-dataset mask and no nodata, and return its path."""
     data = np.full((1, 20, 20), 7, dtype="uint8")
@@ -706,8 +772,15 @@ def _masked_tile(path, *, x=X0):
     mask[:5, :5] = 0
     with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
         with rasterio.open(
-            path, "w", driver="GTiff", width=20, height=20, count=1, dtype="uint8",
-            crs="EPSG:32648", transform=from_origin(x, Y0, PIXEL, PIXEL),
+            path,
+            "w",
+            driver="GTiff",
+            width=20,
+            height=20,
+            count=1,
+            dtype="uint8",
+            crs="EPSG:32648",
+            transform=from_origin(x, Y0, PIXEL, PIXEL),
         ) as dst:
             dst.write(data)
             dst.write_mask(mask)
@@ -719,8 +792,17 @@ def _alpha_tile(path, *, x=X0):
     data = np.full((4, 20, 20), 9, dtype="uint8")
     data[3] = 255
     with rasterio.open(
-        path, "w", driver="GTiff", width=20, height=20, count=4, dtype="uint8",
-        crs="EPSG:32648", transform=from_origin(x, Y0, PIXEL, PIXEL), photometric="RGB", alpha="YES",
+        path,
+        "w",
+        driver="GTiff",
+        width=20,
+        height=20,
+        count=4,
+        dtype="uint8",
+        crs="EPSG:32648",
+        transform=from_origin(x, Y0, PIXEL, PIXEL),
+        photometric="RGB",
+        alpha="YES",
     ) as dst:
         dst.write(data)
     return path
