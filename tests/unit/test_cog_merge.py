@@ -413,6 +413,18 @@ def test_url_tile_is_refused_before_it_is_opened(tmp_path, monkeypatch):
     assert not (tmp_path / "merged.tif").exists()
 
 
+@pytest.mark.parametrize(
+    "make_tiles",
+    [lambda tile: {tile}, lambda tile: (t for t in [tile]), lambda tile: [tile, None]],
+    ids=["set", "generator", "None item"],
+)
+def test_tiles_that_are_not_a_list_or_tuple_of_paths_are_refused(tmp_path, make_tiles):
+    tile = _tile(tmp_path / "a.tif", width=10, height=10)
+    with pytest.raises(InvalidInputError, match="tiles must be"):
+        merge_to_cog(make_tiles(tile), tmp_path / "merged.tif", "mode")
+    assert not (tmp_path / "merged.tif").exists()
+
+
 def test_relative_tile_paths_are_found(tmp_path, monkeypatch):
     tiles = _random_tiles(tmp_path)
     monkeypatch.chdir(tmp_path)

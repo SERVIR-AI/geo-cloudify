@@ -280,7 +280,8 @@ def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
 
     Raises:
         InvalidInputError: if `tiles` is empty, is a single string or path object
-            instead of a sequence of them, or a tile is not a local file.
+            instead of a list, is not a list or tuple, or holds an item that is
+            not a string or path object, or a tile is not a local file.
         TileMismatchError: naming the first tile that differs and the field
             ("crs", "orientation", "pixel size", "grid alignment", "band count",
             "data type", "nodata" or "mask").
@@ -306,8 +307,14 @@ def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGri
     """
     if isinstance(tiles, (str, bytes, PathLike)):
         raise InvalidInputError(f"tiles must be a list of paths, not a single path: {tiles!r}")
+    # A set or generator has no first tile, and a generator can be read only once.
+    if not isinstance(tiles, (list, tuple)):
+        raise InvalidInputError(f"tiles must be a list or tuple of paths, not a {type(tiles).__name__}")
     if not tiles:
         raise InvalidInputError("no tiles given")
+    for tile in tiles:
+        if not isinstance(tile, (str, PathLike)):
+            raise InvalidInputError(f"tiles must be paths (str or path objects), got {tile!r}")
     headers = [_read_header(tile) for tile in tiles]
     ref = headers[0]
     offsets_from_ref = []
@@ -703,8 +710,9 @@ def merge_to_cog(
     Raises:
         InvalidInputError: if `overview_resampling` is not one of the allowed values,
             `compression_codec` is lossy or unknown, `blocksize` is not allowed,
-            `tiles` is empty or a single path instead of a list, a tile is not a
-            local file, or the tiles leave places uncovered and have no nodata
+            `tiles` is empty, a single path instead of a list, not a list or
+            tuple, or holds an item that is not a string or path object, a tile
+            is not a local file, or the tiles leave places uncovered and have no nodata
             (the message gives the number of uncovered pixels). Nothing is written.
         OutputExistsError: if `output` already exists. It is left untouched.
         TileMismatchError: naming the tile and the field when tiles differ (field

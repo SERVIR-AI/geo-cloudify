@@ -110,8 +110,9 @@ def check_merged_cog(tiles: Sequence[str | PathLike], output: str | PathLike) ->
         that differs, with how many pixels differ and the first few places.
 
     Raises:
-        InvalidInputError: if `tiles` is empty or a single path instead of a list, a
-            tile is not a local file, or the tiles hold complex numbers (the pixel
+        InvalidInputError: if `tiles` is empty, a single path instead of a list,
+            not a list or tuple, or holds an item that is not a string or path
+            object, a tile is not a local file, or the tiles hold complex numbers (the pixel
             comparison does not support them).
         TileMismatchError: if the tiles do not share one grid, naming the tile and
             the field ("crs", "orientation", "pixel size", "grid alignment", "band
