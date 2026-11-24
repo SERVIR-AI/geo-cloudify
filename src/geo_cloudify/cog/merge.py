@@ -106,7 +106,7 @@ class _TileGrid:
 
 @dataclass(frozen=True)
 class _TileHeader:
-    """What `_find_union_grid` needs from one tile's header.
+    """What `_validate_and_place_tiles` needs from one tile's header.
 
     Attributes:
         tile: the tile as the caller gave it (a path, as a string).
@@ -259,8 +259,8 @@ def _pixel_offset(header: _TileHeader, ref: _TileHeader) -> tuple[int, int]:
     return round(col), round(row)
 
 
-def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
-    """Check that tiles share one grid and return the grid that covers them all.
+def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGrid, list[tuple[_TileHeader, int, int]]]:
+    """Check that tiles share one grid, and return that grid and where each tile sits on it.
 
     The first tile is the reference. Every other tile must have the same CRS
     (compared as a CRS, not as text), pixel size, data type, band count and
@@ -275,8 +275,10 @@ def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
             A single path given as a bare string or path object is refused.
 
     Returns:
-        The union grid: shared CRS, dtype, band count and nodata, and the
-        transform, width and height that cover every tile.
+        The union grid (shared CRS, dtype, band count and nodata, and the
+        transform, width and height that cover every tile), and for each tile in
+        the order given: its header and the column and row of its top-left pixel
+        on the union grid (0 or more).
 
     Raises:
         InvalidInputError: if `tiles` is empty, is a single string or path object
@@ -286,24 +288,6 @@ def _find_union_grid(tiles: Sequence[str | PathLike]) -> _TileGrid:
             ("crs", "orientation", "pixel size", "grid alignment", "band count",
             "data type", "nodata" or "mask").
         GeoCloudifyError: if GDAL cannot open a tile, with the GDAL error as its cause.
-    """
-    return _validate_and_place_tiles(tiles)[0]
-
-
-def _validate_and_place_tiles(tiles: Sequence[str | PathLike]) -> tuple[_TileGrid, list[tuple[_TileHeader, int, int]]]:
-    """Run the `_find_union_grid` checks and also say where each tile sits on the union grid.
-
-    Args:
-        tiles: a list or tuple of one or more local paths.
-
-    Returns:
-        The union grid, and for each tile in the order given: its header and the
-        column and row of its top-left pixel on the union grid (0 or more).
-
-    Raises:
-        InvalidInputError: as `_find_union_grid`.
-        TileMismatchError: as `_find_union_grid`.
-        GeoCloudifyError: if GDAL cannot open a tile.
     """
     if isinstance(tiles, (str, bytes, PathLike)):
         raise InvalidInputError(f"tiles must be a list of paths, not a single path: {tiles!r}")

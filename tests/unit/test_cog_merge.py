@@ -1,4 +1,4 @@
-"""Unit tests for checking that tiles share one grid (_find_union_grid) and merging them (merge_to_cog)."""
+"""Unit tests for checking that tiles share one grid (_validate_and_place_tiles) and merging them (merge_to_cog)."""
 
 import hashlib
 import math
@@ -18,7 +18,7 @@ from rasterio.windows import Window
 from rio_cogeo.cogeo import cog_validate
 
 from geo_cloudify.cog.merge import (
-    GeoCloudifyError, InvalidInputError, _TileGrid, TileMismatchError, _find_union_grid, merge_to_cog,
+    GeoCloudifyError, InvalidInputError, _TileGrid, TileMismatchError, _validate_and_place_tiles, merge_to_cog,
 )
 
 # A scaled-down RLCMS year: 30 m pixels, negative x origin, tiles of different sizes.
@@ -52,7 +52,7 @@ def _four_tiles(tmp_path, **last_tile_kwargs):
 
 def test_four_matching_tiles_give_the_union_grid(tmp_path):
     tiles = _four_tiles(tmp_path)
-    grid = _find_union_grid(tiles)
+    grid, _ = _validate_and_place_tiles(tiles)
     assert isinstance(grid, _TileGrid)
     assert grid.crs == CRS.from_epsg(32648)
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
@@ -62,7 +62,7 @@ def test_four_matching_tiles_give_the_union_grid(tmp_path):
 
 def test_union_starts_at_the_most_north_west_tile_in_any_order(tmp_path):
     tiles = _four_tiles(tmp_path)
-    grid = _find_union_grid(list(reversed(tiles)))
+    grid, _ = _validate_and_place_tiles(list(reversed(tiles)))
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (63, 57)
 
@@ -70,7 +70,7 @@ def test_union_starts_at_the_most_north_west_tile_in_any_order(tmp_path):
 def test_union_covers_a_gap_between_tiles(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 15 * PIXEL, y=Y0 - 5 * PIXEL, width=10, height=10)
-    grid = _find_union_grid([a, b])
+    grid, _ = _validate_and_place_tiles([a, b])
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height) == (25, 15)
 
@@ -78,13 +78,13 @@ def test_union_covers_a_gap_between_tiles(tmp_path):
 def test_tiny_float_noise_in_origin_is_still_aligned(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL + 1e-7, width=10, height=10)
-    grid = _find_union_grid([a, b])
+    grid, _ = _validate_and_place_tiles([a, b])
     assert (grid.width, grid.height) == (20, 10)
 
 
 def test_single_tile_is_accepted(tmp_path):
     tile = _tile(tmp_path / "one.tif", width=23, height=17, nodata=None)
-    grid = _find_union_grid([str(tile)])
+    grid, _ = _validate_and_place_tiles([str(tile)])
     assert grid.transform == from_origin(X0, Y0, PIXEL, PIXEL)
     assert (grid.width, grid.height, grid.nodata) == (23, 17, None)
 
@@ -113,7 +113,7 @@ def test_same_crs_written_differently_matches(tmp_path):
     )
     with rasterio.open(a) as src_a, rasterio.open(b) as src_b:
         assert src_a.crs.to_wkt() != src_b.crs.to_wkt()
-    grid = _find_union_grid([a, b])
+    grid, _ = _validate_and_place_tiles([a, b])
     assert (grid.width, grid.height) == (20, 10)
 
 
@@ -121,12 +121,12 @@ def test_same_crs_written_differently_matches(tmp_path):
 def test_single_path_instead_of_a_list_is_refused(tmp_path, as_type):
     tile = _tile(tmp_path / "a.tif", width=10, height=10)
     with pytest.raises(ValueError, match="not a single path"):
-        _find_union_grid(as_type(tile))
+        _validate_and_place_tiles(as_type(tile))
 
 
 def test_empty_tile_list_is_refused():
     with pytest.raises(ValueError, match="no tiles"):
-        _find_union_grid([])
+        _validate_and_place_tiles([])
 
 
 @pytest.mark.parametrize(
@@ -147,7 +147,7 @@ def test_empty_tile_list_is_refused():
 def test_mismatched_tile_is_refused_naming_tile_and_field(tmp_path, change, field):
     tiles = _four_tiles(tmp_path, **change)
     with pytest.raises(TileMismatchError) as caught:
-        _find_union_grid(tiles)
+        _validate_and_place_tiles(tiles)
     assert caught.value.tile == str(tiles[3])
     assert caught.value.field == field
     assert "se.tif" in str(caught.value) and field in str(caught.value)
@@ -157,7 +157,7 @@ def test_first_tile_without_nodata_and_second_with_is_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10, nodata=None)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, nodata=0)
     with pytest.raises(TileMismatchError) as caught:
-        _find_union_grid([a, b])
+        _validate_and_place_tiles([a, b])
     assert (caught.value.tile, caught.value.field) == (str(b), "nodata")
 
 
@@ -166,14 +166,14 @@ def test_nan_and_number_nodata_are_refused(tmp_path):
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10,
               dtype="float32", nodata=-9999)
     with pytest.raises(TileMismatchError, match="nodata"):
-        _find_union_grid([a, b])
+        _validate_and_place_tiles([a, b])
 
 
 def test_tile_without_crs_is_refused(tmp_path):
     a = _tile(tmp_path / "a.tif", width=10, height=10)
     b = _tile(tmp_path / "b.tif", x=X0 + 10 * PIXEL, width=10, height=10, crs=None)
     with pytest.raises(TileMismatchError) as caught:
-        _find_union_grid([a, b])
+        _validate_and_place_tiles([a, b])
     assert (caught.value.tile, caught.value.field) == (str(b), "crs")
 
 
@@ -181,7 +181,7 @@ def test_rotated_tile_is_refused(tmp_path):
     rotated = Affine(PIXEL, 1.0, X0, 0.0, -PIXEL, Y0)
     tile = _tile(tmp_path / "r.tif", width=10, height=10, transform=rotated)
     with pytest.raises(TileMismatchError) as caught:
-        _find_union_grid([tile])
+        _validate_and_place_tiles([tile])
     assert caught.value.field == "orientation"
 
 
@@ -189,10 +189,10 @@ def test_only_headers_are_read(tmp_path, monkeypatch):
     tiles = _four_tiles(tmp_path)
 
     def no_read(*args, **kwargs):
-        raise AssertionError("_find_union_grid read pixels")
+        raise AssertionError("_validate_and_place_tiles read pixels")
 
     monkeypatch.setattr(DatasetReader, "read", no_read)
-    _find_union_grid(tiles)
+    _validate_and_place_tiles(tiles)
 
 
 # --- merge_to_cog ---------------------------------------------------------------------
@@ -749,7 +749,7 @@ def test_mask_is_found_without_reading_pixels(tmp_path, monkeypatch):
     monkeypatch.setattr(DatasetReader, "read_masks", no_read)
     monkeypatch.setattr(DatasetReader, "dataset_mask", no_read)
     with pytest.raises(TileMismatchError) as caught:
-        _find_union_grid([masked])
+        _validate_and_place_tiles([masked])
     assert caught.value.field == "mask"
 
 
