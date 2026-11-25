@@ -31,8 +31,6 @@ CI runs the same checks after `uv sync --locked`, which fails if `uv.lock` does 
   Removed code stays in git history; bring it back when a use case needs it.
 - **Settings are arguments.**
   Library code reads no config file and no environment variables, so any project can call it.
-- **`scripts/` holds standalone proofs of concept.**
-  They are not part of the package and are not held to the rules below.
 
 ## Rules
 
