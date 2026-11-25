@@ -32,6 +32,3 @@ htmlcov/
 
 # Large test data
 tests/fixtures/data/
-
-# Job temp folders
-tmp/
