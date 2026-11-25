@@ -22,8 +22,6 @@ dev = [
 
 [tool.ruff]
 line-length = 120
-# Standalone proofs of concept, not part of the package and not held to its rules (AGENTS.md).
-extend-exclude = ["scripts"]
 
 [tool.ruff.lint]
 # Style errors, undefined and unused names, import order, likely bugs, and syntax Python 3.12 has a newer form for.
