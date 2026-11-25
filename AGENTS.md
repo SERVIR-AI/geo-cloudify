@@ -10,12 +10,15 @@ Its first user is the ingest step of [servir-data-catalog](https://github.com/SE
 ## Setup and checks
 
 ```bash
-uv sync --all-extras
+uv sync
+uv run ruff check
+uv run ruff format --check
 uv run pytest -q
 ```
 
 Run these checks before opening a pull request.
-Commit `uv.lock` together with any change to `pyproject.toml`.
+`uv run ruff check --fix` and `uv run ruff format` fix most of what the lint and format checks report.
+CI runs the same checks after `uv sync --locked`, which fails if `uv.lock` does not match `pyproject.toml`, so commit both together.
 
 ## Scope
 

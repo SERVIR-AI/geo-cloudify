@@ -22,12 +22,12 @@ from geo_cloudify.cog.merge import (
     _PIXEL_SIZE_TOLERANCE,
     GeoCloudifyError,
     InvalidInputError,
-    _TileGrid,
     TileMismatchError,
     _check_no_overlap,
+    _nodata_equal,
+    _TileGrid,
     _TileHeader,
     _validate_and_place_tiles,
-    _nodata_equal,
 )
 
 # About how many pixels one read may hold. Windows are rounded to whole blocks.
@@ -116,9 +116,9 @@ def _check_overviews(output_dataset: DatasetReader, output: str | PathLike) -> l
     # Every band must have the same overview levels as band 1.
     for band in range(2, output_dataset.count + 1):
         if output_dataset.overviews(band) != factors:
-            problems.append(Problem(
-                "overviews", f"band {band} has levels {output_dataset.overviews(band)}, band 1 has {factors}"
-            ))
+            problems.append(
+                Problem("overviews", f"band {band} has levels {output_dataset.overviews(band)}, band 1 has {factors}")
+            )
     # Size of the smallest level; with no overviews that is the full image.
     if factors:
         with rasterio.open(output, overview_level=len(factors) - 1) as smallest:
@@ -128,11 +128,13 @@ def _check_overviews(output_dataset: DatasetReader, output: str | PathLike) -> l
     block_height, block_width = output_dataset.block_shapes[0]
     # The smallest level must fit in one block.
     if width > block_width or height > block_height:
-        problems.append(Problem(
-            "overviews",
-            f"the smallest level is {width} x {height} pixels, larger than one "
-            f"{block_width} x {block_height} block (levels: {factors or 'none'})",
-        ))
+        problems.append(
+            Problem(
+                "overviews",
+                f"the smallest level is {width} x {height} pixels, larger than one "
+                f"{block_width} x {block_height} block (levels: {factors or 'none'})",
+            )
+        )
     return problems
 
 
@@ -152,8 +154,10 @@ def _same_transform(actual: Affine, expected: Affine) -> bool:
     return (
         math.isclose(actual.a, expected.a, rel_tol=_PIXEL_SIZE_TOLERANCE)
         and math.isclose(actual.e, expected.e, rel_tol=_PIXEL_SIZE_TOLERANCE)
-        and abs(actual.b) <= tolerance_x and abs(actual.d) <= tolerance_y
-        and abs(actual.c - expected.c) <= tolerance_x and abs(actual.f - expected.f) <= tolerance_y
+        and abs(actual.b) <= tolerance_x
+        and abs(actual.d) <= tolerance_y
+        and abs(actual.c - expected.c) <= tolerance_x
+        and abs(actual.f - expected.f) <= tolerance_y
     )
 
 
@@ -172,13 +176,16 @@ def _check_grid(output_dataset: DatasetReader, grid: _TileGrid) -> list[Problem]
     if output_dataset.crs is None or output_dataset.crs != grid.crs:
         problems.append(Problem("crs", f"output {output_dataset.crs}, tiles {grid.crs}"))
     if not _same_transform(output_dataset.transform, grid.transform):
-        problems.append(Problem(
-            "transform", f"output {tuple(output_dataset.transform)[:6]}, tiles {tuple(grid.transform)[:6]}"
-        ))
+        problems.append(
+            Problem("transform", f"output {tuple(output_dataset.transform)[:6]}, tiles {tuple(grid.transform)[:6]}")
+        )
     if (output_dataset.width, output_dataset.height) != (grid.width, grid.height):
-        problems.append(Problem(
-            "size", f"output {output_dataset.width} x {output_dataset.height}, tiles cover {grid.width} x {grid.height}"
-        ))
+        problems.append(
+            Problem(
+                "size",
+                f"output {output_dataset.width} x {output_dataset.height}, tiles cover {grid.width} x {grid.height}",
+            )
+        )
     if output_dataset.count != grid.count:
         problems.append(Problem("band count", f"output {output_dataset.count}, tiles {grid.count}"))
     if set(output_dataset.dtypes) != {grid.dtype}:
@@ -255,9 +262,7 @@ def _as_unsigned_bits(data: np.ndarray) -> np.ndarray:
     return data.view(f"u{data.dtype.itemsize}")
 
 
-def _paste(
-    expected: np.ndarray, window: Window, tile_dataset: DatasetReader, band: int, col: int, row: int
-) -> None:
+def _paste(expected: np.ndarray, window: Window, tile_dataset: DatasetReader, band: int, col: int, row: int) -> None:
     """Copy the part of one tile that falls inside `window` into `expected`, in place.
 
     Nothing is copied when the tile does not reach the window.
@@ -283,7 +288,9 @@ def _paste(
     # The same box in the tile's own pixels, to read.
     tile_window = Window(left - col, top - row, right - left, bottom - top)
     # The same box in the window's pixels, to write.
-    expected[top - window_row:bottom - window_row, left - window_col:right - window_col] = tile_dataset.read(band, window=tile_window)
+    expected[top - window_row : bottom - window_row, left - window_col : right - window_col] = tile_dataset.read(
+        band, window=tile_window
+    )
 
 
 def _describe_first_differences(
@@ -306,7 +313,7 @@ def _describe_first_differences(
     places: list[str] = []
     for row in range(differs.shape[0]):
         # Columns of differing pixels in this row, only as many as are still needed.
-        for col in np.flatnonzero(differs[row])[:limit - len(places)]:
+        for col in np.flatnonzero(differs[row])[: limit - len(places)]:
             places.append(
                 f"column {int(window.col_off) + int(col)}, row {int(window.row_off) + row}: "
                 f"expected {expected[row, col].item()}, found {found[row, col].item()}"
@@ -362,12 +369,14 @@ def _check_pixels(
                 differing_count += int(np.count_nonzero(differs))
                 # Keep the first few differing places for the message.
                 if len(first_differences) < _MAX_LISTED_PIXELS and differing_count:
-                    first_differences += _describe_first_differences(differs, expected, found, window, _MAX_LISTED_PIXELS - len(first_differences))
+                    first_differences += _describe_first_differences(
+                        differs, expected, found, window, _MAX_LISTED_PIXELS - len(first_differences)
+                    )
             if differing_count:
                 noun = "pixel differs" if differing_count == 1 else "pixels differ"
-                problems.append(Problem(
-                    "pixels", f"band {band}: {differing_count} {noun}; first: {'; '.join(first_differences)}"
-                ))
+                problems.append(
+                    Problem("pixels", f"band {band}: {differing_count} {noun}; first: {'; '.join(first_differences)}")
+                )
     return problems
 
 

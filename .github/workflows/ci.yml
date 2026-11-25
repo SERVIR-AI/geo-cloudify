@@ -15,7 +15,13 @@ jobs:
 
       # --locked fails if uv.lock is out of date with pyproject.toml, so CI uses the same versions as local runs.
       - name: Install
-        run: uv sync --locked --all-extras
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Check formatting
+        run: uv run ruff format --check
 
       - name: Run tests
         run: uv run pytest -q

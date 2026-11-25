@@ -4,7 +4,7 @@ Converts geospatial files to cloud-optimized formats and checks the result. Rast
 
 ## Install
 
-- With uv: `uv sync`.
+- With uv: `uv add "geo-cloudify @ git+https://github.com/SERVIR-AI/geo-cloudify.git@v0.1.0"`.
 - With pip: `pip install "geo-cloudify @ git+https://github.com/SERVIR-AI/geo-cloudify.git@v0.1.0"`.
 
 ## Merge tiles into one COG
