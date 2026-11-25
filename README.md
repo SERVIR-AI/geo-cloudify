@@ -4,6 +4,8 @@ Converts geospatial files to cloud-optimized formats and checks the result. Rast
 
 ## Install
 
+Needs Python 3.12 or later.
+
 - With uv: `uv add "geo-cloudify @ git+https://github.com/SERVIR-AI/geo-cloudify.git@v0.1.0"`.
 - With pip: `pip install "geo-cloudify @ git+https://github.com/SERVIR-AI/geo-cloudify.git@v0.1.0"`.
 
@@ -26,6 +28,7 @@ if not result.passed:
 `merge_to_cog(tiles, output, overview_resampling, *, compression_codec="DEFLATE", blocksize=512)` returns the output path.
 
 - `tiles`: a list or tuple of local paths.
+  One path gives a plain conversion.
 - `overview_resampling`: `nearest` or `mode` for class data, `average` for continuous data.
 - `compression_codec`: a lossless codec, `DEFLATE` (default), `LZW`, `ZSTD`, `LZMA` or `NONE`.
 - `blocksize`: the COG block size in pixels, a power of two from 16 to 4096 (default 512).

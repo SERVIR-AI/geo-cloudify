@@ -1,6 +1,9 @@
 # Personal agent instructions (local only); CLAUDE.md and AGENTS.md are shared
 CLAUDE.local.md
 
+# Local dev folder
+dev/
+
 # Python
 __pycache__/
 *.py[cod]
